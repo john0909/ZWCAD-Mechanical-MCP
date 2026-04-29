@@ -6,6 +6,10 @@
 
 基于 [FastMCP](https://github.com/jlowin/fastmcp) 框架的中望机械CAD自动化 MCP 服务，让 AI 模型（如 DeepSeek, Qwen,GLM,Kimi等）可以通过 MCP 协议直接操控中望机械CAD完成绘图、编辑标题栏、管理图框和明细表等操作。
 
+## 演示视频
+
+https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
+
 ## 功能概览
 
 | 分类 | 工具数 | 说明 |
@@ -197,8 +201,6 @@ AI 客户端 (Cursor/Claude/Qoder)
 
 2. **样式文件路径**: `create_frame` 工具从中望机械CAD安装目录的 XML 配置文件中读取默认样式，路径为 `C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles`。
 
-https://github.com/john0909/ZWCAD-Mechanical-MCP/blob/main/ZWCADMechMCPSample.mp4
-
 ## 依赖项目
 
 - [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD/AutoCAD Python COM 封装
@@ -218,6 +220,10 @@ MIT License - 详见 [LICENSE](LICENSE)
 [中文](#zwcad-mechanical-mcp-server) | English
 
 A ZWCAD Mechanical automation MCP server built with [FastMCP](https://github.com/jlowin/fastmcp), enabling AI models (Claude, GPT, Cursor, etc.) to control ZWCAD Mechanical directly via the MCP protocol for drawing, title block editing, frame management, BOM operations, and more.
+
+## Demo Video
+
+https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
 
 ## Feature Overview
 
