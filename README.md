@@ -192,13 +192,13 @@ AI 客户端 (Cursor/Claude/Qoder)
 
 ## 注意事项
 
-1. **COM 线程模型**: 本服务在启动时强制初始化 STA（单线程公寓）模型，以兼容 ZWCAD COM 接口要求。请勿移除 `pythoncom.CoInitializeEx` 调用。
 
-2. **stdout 污染**: MCP STDIO 传输要求 stdout 仅传输 JSON-RPC 消息。所有日志输出已重定向到 stderr。请勿在代码中使用 `print()` 输出到 stdout。
+1. **ZWCAD 必须运行**: 所有工具调用都需要中望机械CAD已启动并打开 DWG 文件。
 
-3. **ZWCAD 必须运行**: 所有工具调用都需要中望机械CAD已启动并打开 DWG 文件。
+2. **样式文件路径**: `create_frame` 工具从中望机械CAD安装目录的 XML 配置文件中读取默认样式，路径为 `C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles`。
 
-4. **样式文件路径**: `create_frame` 工具从中望机械CAD安装目录的 XML 配置文件中读取默认样式，路径为 `C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles`。
+##演示视频
+https://github.com/john0909/ZWCAD-Mechanical-MCP/blob/main/ZWCADMechMCPSample.mp4
 
 ## 依赖项目
 
