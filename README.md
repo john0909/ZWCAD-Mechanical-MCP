@@ -197,7 +197,6 @@ AI 客户端 (Cursor/Claude/Qoder)
 
 2. **样式文件路径**: `create_frame` 工具从中望机械CAD安装目录的 XML 配置文件中读取默认样式，路径为 `C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles`。
 
-##演示视频
 https://github.com/john0909/ZWCAD-Mechanical-MCP/blob/main/ZWCADMechMCPSample.mp4
 
 ## 依赖项目
