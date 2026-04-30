@@ -1,4 +1,4 @@
-# ZWCAD MFG MCP Server
+# ZWCAD机械版 MCP Server
 
 [中文](#zwcad-mechanical-mcp-server) | [English](#english)
 
