@@ -1,12 +1,15 @@
-"""  
+"""
 ZWCAD Mechanical MCP Server - 基于 FastMCP 的中望机械CAD自动化服务
-提供画直线、画圆、标题栏编辑、图框切换、明细表操作等功能
+提供画直线、画圆、画弧、画椭圆、多段线、样条曲线、标注、图块、图层、
+标题栏编辑、图框切换、明细表操作等功能
 """
 
 from fastmcp import FastMCP
 from pyzwcad import ZwCAD, APoint
+from pyzwcad.types import aDouble, aInt
 from pyzwcadmech import ZwCADMech
 import json
+import math
 import sys
 import pythoncom
 import xml.etree.ElementTree as ET
@@ -1693,6 +1696,1698 @@ def create_frame(
         return f"成功创建图框: {name} (标准:{std_name}, 图幅:{frame_size_name})"
     except Exception as e:
         return f"创建图框失败: {str(e)}"
+
+
+# ==========================================
+# 扩展绘图工具（来自 zwcad25.tlb COM 接口）
+# ==========================================
+
+@mcp.tool
+def draw_arc(center_x: float, center_y: float, center_z: float,
+             radius: float, start_angle: float, end_angle: float,
+             layer: str = "0") -> str:
+    """
+    在 ZWCAD 中绘制一条圆弧
+
+    参数:
+    - center_x, center_y, center_z: 圆心坐标
+    - radius: 半径
+    - start_angle: 起始角度（弧度）
+    - end_angle: 终止角度（弧度）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        center = APoint(center_x, center_y, center_z)
+        arc = zcad_conn.model.AddArc(center, radius, start_angle, end_angle)
+        arc.Layer = layer
+        return f"成功绘制圆弧: 圆心({center_x},{center_y},{center_z}), 半径={radius}, 角度{start_angle:.4f}~{end_angle:.4f}，图层: {layer}"
+    except Exception as e:
+        return _format_error("绘制圆弧", e)
+
+
+@mcp.tool
+def draw_ellipse(center_x: float, center_y: float, center_z: float,
+                 major_axis_x: float, major_axis_y: float, major_axis_z: float,
+                 radius_ratio: float,
+                 layer: str = "0") -> str:
+    """
+    在 ZWCAD 中绘制一个椭圆
+
+    参数:
+    - center_x, center_y, center_z: 圆心坐标
+    - major_axis_x, major_axis_y, major_axis_z: 主轴方向向量（从圆心到主轴端点）
+    - radius_ratio: 短轴与长轴的比值（0~1）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        center = APoint(center_x, center_y, center_z)
+        major_axis = APoint(major_axis_x, major_axis_y, major_axis_z)
+        ellipse = zcad_conn.model.AddEllipse(center, major_axis, radius_ratio)
+        ellipse.Layer = layer
+        return f"成功绘制椭圆: 圆心({center_x},{center_y},{center_z}), 半轴比={radius_ratio}，图层: {layer}"
+    except Exception as e:
+        return _format_error("绘制椭圆", e)
+
+
+@mcp.tool
+def draw_lwpolyline(vertices: list, layer: str = "0",
+                    closed: bool = False) -> str:
+    """
+    在 ZWCAD 中绘制轻量多段线（LWPolyline）
+
+    参数:
+    - vertices: 顶点坐标列表，格式为 [[x1,y1], [x2,y2], ...] 或 [x1,y1,x2,y2,...]
+    - layer: 图层名称（可选，默认为"0"）
+    - closed: 是否闭合（可选，默认False）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        # 展平顶点列表
+        flat = []
+        for v in vertices:
+            if isinstance(v, (list, tuple)):
+                flat.extend(v)
+            else:
+                flat.append(v)
+        coords = aDouble(*flat)
+        pline = zcad_conn.model.AddLightWeightPolyline(coords)
+        pline.Layer = layer
+        if closed:
+            pline.Closed = True
+        return f"成功绘制轻量多段线: {len(flat)//2}个顶点, 闭合={closed}，图层: {layer}"
+    except Exception as e:
+        return _format_error("绘制轻量多段线", e)
+
+
+@mcp.tool
+def draw_polyline(vertices: list, layer: str = "0",
+                  closed: bool = False) -> str:
+    """
+    在 ZWCAD 中绘制2D多段线（Polyline）
+
+    参数:
+    - vertices: 顶点坐标列表，格式为 [[x1,y1,z1], [x2,y2,z2], ...] 或 [x1,y1,x2,y2,...]
+    - layer: 图层名称（可选，默认为"0"）
+    - closed: 是否闭合（可选，默认False）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        flat = []
+        for v in vertices:
+            if isinstance(v, (list, tuple)):
+                flat.extend(v)
+            else:
+                flat.append(v)
+        coords = aDouble(*flat)
+        pline = zcad_conn.model.AddPolyline(coords)
+        pline.Layer = layer
+        if closed:
+            pline.Closed = True
+        return f"成功绘制2D多段线: {len(flat)//3}个顶点, 闭合={closed}，图层: {layer}"
+    except Exception as e:
+        return _format_error("绘制2D多段线", e)
+
+
+@mcp.tool
+def draw_spline(fit_points: list,
+                start_tangent_x: float = 0, start_tangent_y: float = 0, start_tangent_z: float = 0,
+                end_tangent_x: float = 0, end_tangent_y: float = 0, end_tangent_z: float = 0,
+                layer: str = "0") -> str:
+    """
+    在 ZWCAD 中绘制样条曲线
+
+    参数:
+    - fit_points: 拟合点列表，格式为 [[x1,y1,z1], [x2,y2,z2], ...] 或 [x1,y1,z1,x2,y2,z2,...]
+    - start_tangent_x/y/z: 起点切向向量（可选，默认0）
+    - end_tangent_x/y/z: 终点切向向量（可选，默认0）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        flat = []
+        for v in fit_points:
+            if isinstance(v, (list, tuple)):
+                flat.extend(v)
+            else:
+                flat.append(v)
+        points = aDouble(*flat)
+        start_tan = APoint(start_tangent_x, start_tangent_y, start_tangent_z)
+        end_tan = APoint(end_tangent_x, end_tangent_y, end_tangent_z)
+        spline = zcad_conn.model.AddSpline(points, start_tan, end_tan)
+        spline.Layer = layer
+        return f"成功绘制样条曲线: {len(flat)//3}个拟合点，图层: {layer}"
+    except Exception as e:
+        return _format_error("绘制样条曲线", e)
+
+
+@mcp.tool
+def add_point(x: float, y: float, z: float,
+              layer: str = "0") -> str:
+    """
+    在指定位置添加点对象
+
+    参数:
+    - x, y, z: 点坐标
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = APoint(x, y, z)
+        pt = zcad_conn.model.AddPoint(point)
+        pt.Layer = layer
+        return f"成功添加点: ({x},{y},{z})，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加点", e)
+
+
+@mcp.tool
+def add_mtext(text: str, x: float, y: float, z: float,
+              width: float = 0, height: float = 2.5,
+              rotation: float = 0, layer: str = "0") -> str:
+    """
+    在指定位置添加多行文本（MText）
+
+    参数:
+    - text: 文本内容（支持格式代码）
+    - x, y, z: 插入点坐标
+    - width: 文本框宽度（可选，0=无限制）
+    - height: 文字高度（可选，默认2.5）
+    - rotation: 旋转角度（弧度，可选，默认0）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = APoint(x, y, z)
+        mtext = zcad_conn.model.AddMText(point, width, text)
+        mtext.Height = height
+        mtext.Rotation = rotation
+        mtext.Layer = layer
+        return f"成功添加多行文本: '{text[:50]}' at ({x},{y},{z})，字高: {height}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加多行文本", e)
+
+
+@mcp.tool
+def insert_block(block_name: str, x: float, y: float, z: float,
+                 x_scale: float = 1.0, y_scale: float = 1.0, z_scale: float = 1.0,
+                 rotation: float = 0.0,
+                 layer: str = "0") -> str:
+    """
+    在指定位置插入图块引用
+
+    参数:
+    - block_name: 图块名称或DWG文件路径
+    - x, y, z: 插入点坐标
+    - x_scale, y_scale, z_scale: X/Y/Z方向缩放比例（可选，默认1.0）
+    - rotation: 旋转角度（弧度，可选，默认0）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = APoint(x, y, z)
+        block_ref = zcad_conn.model.InsertBlock(point, block_name, x_scale, y_scale, z_scale, rotation)
+        block_ref.Layer = layer
+        return f"成功插入图块: '{block_name}' at ({x},{y},{z})，比例({x_scale},{y_scale},{z_scale})，图层: {layer}"
+    except Exception as e:
+        return _format_error("插入图块", e)
+
+
+# ==========================================
+# 标注工具（来自 IZcadBlock / IZcadModelSpace COM 接口）
+# ==========================================
+
+@mcp.tool
+def add_dim_aligned(x1: float, y1: float, z1: float,
+                    x2: float, y2: float, z2: float,
+                    dim_x: float, dim_y: float, dim_z: float,
+                    layer: str = "0",
+                    text_override: str = "") -> str:
+    """
+    添加对齐标注
+
+    参数:
+    - x1,y1,z1: 第一条延伸线原点
+    - x2,y2,z2: 第二条延伸线原点
+    - dim_x,dim_y,dim_z: 标注文字位置
+    - layer: 图层名称（可选，默认为"0"）
+    - text_override: 标注文字覆盖（可选，默认为空使用自动测量值）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        p1 = APoint(x1, y1, z1)
+        p2 = APoint(x2, y2, z2)
+        dim_pt = APoint(dim_x, dim_y, dim_z)
+        dim = zcad_conn.model.AddDimAligned(p1, p2, dim_pt)
+        dim.Layer = layer
+        if text_override:
+            dim.TextOverride = text_override
+        measurement = dim.Measurement
+        return f"成功添加对齐标注: ({x1},{y1})-({x2},{y2}), 测量值={measurement:.4f}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加对齐标注", e)
+
+
+@mcp.tool
+def add_dim_rotated(x1: float, y1: float, z1: float,
+                    x2: float, y2: float, z2: float,
+                    dim_x: float, dim_y: float, dim_z: float,
+                    rotation_angle: float,
+                    layer: str = "0",
+                    text_override: str = "") -> str:
+    """
+    添加旋转标注
+
+    参数:
+    - x1,y1,z1: 第一条延伸线原点
+    - x2,y2,z2: 第二条延伸线原点
+    - dim_x,dim_y,dim_z: 标注线位置
+    - rotation_angle: 标注线旋转角度（弧度）
+    - layer: 图层名称（可选，默认为"0"）
+    - text_override: 标注文字覆盖（可选，默认为空使用自动测量值）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        p1 = APoint(x1, y1, z1)
+        p2 = APoint(x2, y2, z2)
+        dim_pt = APoint(dim_x, dim_y, dim_z)
+        dim = zcad_conn.model.AddDimRotated(p1, p2, dim_pt, rotation_angle)
+        dim.Layer = layer
+        if text_override:
+            dim.TextOverride = text_override
+        measurement = dim.Measurement
+        return f"成功添加旋转标注: 角度={rotation_angle:.4f}, 测量值={measurement:.4f}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加旋转标注", e)
+
+
+@mcp.tool
+def add_dim_diametric(chord_x: float, chord_y: float, chord_z: float,
+                      far_chord_x: float, far_chord_y: float, far_chord_z: float,
+                      leader_length: float = 0,
+                      layer: str = "0",
+                      text_override: str = "") -> str:
+    """
+    添加直径标注
+
+    参数:
+    - chord_x,chord_y,chord_z: 弦上第一点（圆上一点）
+    - far_chord_x,far_chord_y,far_chord_z: 弦上对侧点（圆上对侧点）
+    - leader_length: 引线长度（可选，默认0）
+    - layer: 图层名称（可选，默认为"0"）
+    - text_override: 标注文字覆盖（可选，默认为空使用自动测量值）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        chord = APoint(chord_x, chord_y, chord_z)
+        far_chord = APoint(far_chord_x, far_chord_y, far_chord_z)
+        dim = zcad_conn.model.AddDimDiametric(chord, far_chord, leader_length)
+        dim.Layer = layer
+        if text_override:
+            dim.TextOverride = text_override
+        measurement = dim.Measurement
+        return f"成功添加直径标注: 测量值={measurement:.4f}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加直径标注", e)
+
+
+@mcp.tool
+def add_dim_radial(center_x: float, center_y: float, center_z: float,
+                   chord_x: float, chord_y: float, chord_z: float,
+                   leader_length: float = 0,
+                   layer: str = "0",
+                   text_override: str = "") -> str:
+    """
+    添加半径标注
+
+    参数:
+    - center_x,center_y,center_z: 圆心坐标
+    - chord_x,chord_y,chord_z: 圆上一点坐标
+    - leader_length: 引线长度（可选，默认0）
+    - layer: 图层名称（可选，默认为"0"）
+    - text_override: 标注文字覆盖（可选，默认为空使用自动测量值）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        center = APoint(center_x, center_y, center_z)
+        chord = APoint(chord_x, chord_y, chord_z)
+        dim = zcad_conn.model.AddDimRadial(center, chord, leader_length)
+        dim.Layer = layer
+        if text_override:
+            dim.TextOverride = text_override
+        measurement = dim.Measurement
+        return f"成功添加半径标注: 测量值={measurement:.4f}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加半径标注", e)
+
+
+@mcp.tool
+def add_dim_angular(vertex_x: float, vertex_y: float, vertex_z: float,
+                    first_x: float, first_y: float, first_z: float,
+                    second_x: float, second_y: float, second_z: float,
+                    text_x: float, text_y: float, text_z: float,
+                    layer: str = "0",
+                    text_override: str = "") -> str:
+    """
+    添加角度标注
+
+    参数:
+    - vertex_x,vertex_y,vertex_z: 角度顶点
+    - first_x,first_y,first_z: 第一条边的端点
+    - second_x,second_y,second_z: 第二条边的端点
+    - text_x,text_y,text_z: 标注文字位置
+    - layer: 图层名称（可选，默认为"0"）
+    - text_override: 标注文字覆盖（可选，默认为空使用自动测量值）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        vertex = APoint(vertex_x, vertex_y, vertex_z)
+        first = APoint(first_x, first_y, first_z)
+        second = APoint(second_x, second_y, second_z)
+        text_pt = APoint(text_x, text_y, text_z)
+        dim = zcad_conn.model.AddDimAngular(vertex, first, second, text_pt)
+        dim.Layer = layer
+        if text_override:
+            dim.TextOverride = text_override
+        measurement = dim.Measurement
+        return f"成功添加角度标注: 测量值={measurement:.4f}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加角度标注", e)
+
+
+@mcp.tool
+def add_dim_ordinate(def_x: float, def_y: float, def_z: float,
+                     leader_x: float, leader_y: float, leader_z: float,
+                     use_x_axis: bool = True,
+                     layer: str = "0",
+                     text_override: str = "") -> str:
+    """
+    添加坐标标注
+
+    参数:
+    - def_x,def_y,def_z: 定义点坐标
+    - leader_x,leader_y,leader_z: 引线端点坐标
+    - use_x_axis: True=标注X坐标，False=标注Y坐标（默认True）
+    - layer: 图层名称（可选，默认为"0"）
+    - text_override: 标注文字覆盖（可选，默认为空使用自动测量值）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        def_pt = APoint(def_x, def_y, def_z)
+        leader_pt = APoint(leader_x, leader_y, leader_z)
+        dim = zcad_conn.model.AddDimOrdinate(def_pt, leader_pt, use_x_axis)
+        dim.Layer = layer
+        if text_override:
+            dim.TextOverride = text_override
+        axis = "X" if use_x_axis else "Y"
+        return f"成功添加坐标标注: {axis}轴，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加坐标标注", e)
+
+
+# ==========================================
+# 图元操作工具（来自 IZcadEntity COM 接口）
+# ==========================================
+
+@mcp.tool
+def copy_object(object_type: str, property_name: str, property_value: str,
+                to_x: float, to_y: float, to_z: float) -> str:
+    """
+    复制对象到指定位置（通过偏移移动）
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - to_x, to_y, to_z: 复制到的目标位置坐标
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        # 获取对象位置
+        if hasattr(obj, 'InsertionPoint'):
+            from_pt = obj.InsertionPoint
+        elif hasattr(obj, 'Center'):
+            from_pt = obj.Center
+        elif hasattr(obj, 'StartPoint'):
+            from_pt = obj.StartPoint
+        else:
+            return "无法确定对象位置，不支持该类型对象的复制"
+
+        to_pt = APoint(to_x, to_y, to_z)
+        new_obj = obj.Copy()
+        new_obj.Move(from_pt, to_pt)
+        return f"成功复制对象到 ({to_x},{to_y},{to_z})"
+    except Exception as e:
+        return _format_error("复制对象", e)
+
+
+@mcp.tool
+def move_object(object_type: str, property_name: str, property_value: str,
+                to_x: float, to_y: float, to_z: float) -> str:
+    """
+    移动对象到指定位置
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - to_x, to_y, to_z: 目标位置坐标
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        if hasattr(obj, 'InsertionPoint'):
+            from_pt = obj.InsertionPoint
+        elif hasattr(obj, 'Center'):
+            from_pt = obj.Center
+        elif hasattr(obj, 'StartPoint'):
+            from_pt = obj.StartPoint
+        else:
+            return "无法确定对象位置"
+
+        to_pt = APoint(to_x, to_y, to_z)
+        obj.Move(from_pt, to_pt)
+        return f"成功移动对象到 ({to_x},{to_y},{to_z})"
+    except Exception as e:
+        return _format_error("移动对象", e)
+
+
+@mcp.tool
+def rotate_object(object_type: str, property_name: str, property_value: str,
+                  base_x: float, base_y: float, base_z: float,
+                  rotation_angle: float) -> str:
+    """
+    旋转对象
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - base_x, base_y, base_z: 旋转基点坐标
+    - rotation_angle: 旋转角度（弧度）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        base_pt = APoint(base_x, base_y, base_z)
+        obj.Rotate(base_pt, rotation_angle)
+        return f"成功旋转对象: 基点({base_x},{base_y},{base_z}), 角度={rotation_angle:.4f}弧度"
+    except Exception as e:
+        return _format_error("旋转对象", e)
+
+
+@mcp.tool
+def mirror_object(object_type: str, property_name: str, property_value: str,
+                  x1: float, y1: float, z1: float,
+                  x2: float, y2: float, z2: float,
+                  delete_original: bool = False) -> str:
+    """
+    镜像对象
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - x1,y1,z1: 镜像轴第一点
+    - x2,y2,z2: 镜像轴第二点
+    - delete_original: 是否删除原对象（可选，默认False保留原对象）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        p1 = APoint(x1, y1, z1)
+        p2 = APoint(x2, y2, z2)
+        mirrored = obj.Mirror(p1, p2)
+        if delete_original:
+            obj.Delete()
+        action = "并删除原对象" if delete_original else "保留原对象"
+        return f"成功镜像对象{action}: 轴({x1},{y1})-({x2},{y2})"
+    except Exception as e:
+        return _format_error("镜像对象", e)
+
+
+@mcp.tool
+def scale_object(object_type: str, property_name: str, property_value: str,
+                 base_x: float, base_y: float, base_z: float,
+                 scale_factor: float) -> str:
+    """
+    缩放对象
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - base_x, base_y, base_z: 缩放基点坐标
+    - scale_factor: 缩放比例因子
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        base_pt = APoint(base_x, base_y, base_z)
+        obj.ScaleEntity(base_pt, scale_factor)
+        return f"成功缩放对象: 基点({base_x},{base_y},{base_z}), 比例={scale_factor}"
+    except Exception as e:
+        return _format_error("缩放对象", e)
+
+
+@mcp.tool
+def delete_object(object_type: str, property_name: str, property_value: str) -> str:
+    """
+    删除对象
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        obj.Delete()
+        return f"成功删除对象: {object_type}.{property_name}={property_value}"
+    except Exception as e:
+        return _format_error("删除对象", e)
+
+
+@mcp.tool
+def array_polar(object_type: str, property_name: str, property_value: str,
+                center_x: float, center_y: float, center_z: float,
+                number_of_objects: int, angle_to_fill: float) -> str:
+    """
+    极坐标阵列对象
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - center_x, center_y, center_z: 阵列中心点坐标
+    - number_of_objects: 阵列数量（含原对象）
+    - angle_to_fill: 填充角度（弧度，正=逆时针）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        center = APoint(center_x, center_y, center_z)
+        result = obj.ArrayPolar(number_of_objects, angle_to_fill, center)
+        return f"成功极坐标阵列: 数量={number_of_objects}, 填充角度={angle_to_fill:.4f}弧度"
+    except Exception as e:
+        return _format_error("极坐标阵列", e)
+
+
+@mcp.tool
+def array_rectangular(object_type: str, property_name: str, property_value: str,
+                      num_rows: int, num_cols: int, num_levels: int,
+                      row_dist: float, col_dist: float, level_dist: float) -> str:
+    """
+    矩形阵列对象
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+    - num_rows: 行数
+    - num_cols: 列数
+    - num_levels: 层数（3D阵列）
+    - row_dist: 行间距
+    - col_dist: 列间距
+    - level_dist: 层间距
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+
+        result = obj.ArrayRectangular(num_rows, num_cols, num_levels,
+                                       row_dist, col_dist, level_dist)
+        return f"成功矩形阵列: {num_rows}行×{num_cols}列×{num_levels}层"
+    except Exception as e:
+        return _format_error("矩形阵列", e)
+
+
+@mcp.tool
+def get_object_properties(object_type: str, property_name: str, property_value: str) -> str:
+    """
+    获取对象的详细属性信息
+
+    参数:
+    - object_type: 对象类型（如 "Line", "Circle", "Arc" 等）
+    - property_name: 用于定位的属性名（如 "Layer"）
+    - property_value: 属性值
+
+    返回: JSON 格式的对象属性信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        if not obj:
+            return json.dumps({"found": False}, ensure_ascii=False)
+
+        info = {"found": True, "object_name": obj.ObjectName}
+
+        # 通用属性
+        common_props = ['Layer', 'Color', 'Linetype', 'LinetypeScale',
+                        'Lineweight', 'Visible', 'EntityName', 'EntityType']
+        for prop in common_props:
+            if hasattr(obj, prop):
+                try:
+                    info[prop] = getattr(obj, prop)
+                except Exception:
+                    pass
+
+        # 几何属性
+        geo_props = ['StartPoint', 'EndPoint', 'Center', 'Radius', 'Length',
+                     'Area', 'Height', 'Rotation', 'InsertionPoint',
+                     'StartAngle', 'EndAngle', 'TotalAngle',
+                     'XScaleFactor', 'YScaleFactor', 'ZScaleFactor',
+                     'TextString', 'Closed', 'Coordinates']
+        for prop in geo_props:
+            if hasattr(obj, prop):
+                try:
+                    val = getattr(obj, prop)
+                    # 转换APoint等类型为可序列化格式
+                    if hasattr(val, '__iter__'):
+                        val = list(val)
+                    info[prop] = val
+                except Exception:
+                    pass
+
+        # 边界框
+        try:
+            min_pt, max_pt = obj.GetBoundingBox()
+            info['bounding_box'] = {
+                'min': list(min_pt),
+                'max': list(max_pt)
+            }
+        except Exception:
+            pass
+
+        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        return f"获取对象属性失败: {str(e)}"
+
+
+# ==========================================
+# 图层管理工具（来自 IZcadLayers / IZcadLayer COM 接口）
+# ==========================================
+
+@mcp.tool
+def list_layers() -> str:
+    """
+    获取当前文档的所有图层列表
+
+    返回: JSON 格式的图层列表
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        layers = []
+        for layer in zcad_conn.doc.Layers:
+            info = {
+                "name": layer.Name,
+                "on": layer.LayerOn,
+                "frozen": layer.Freeze,
+                "locked": layer.Lock,
+                "color": layer.color
+            }
+            if hasattr(layer, 'Linetype'):
+                info['linetype'] = layer.Linetype
+            if hasattr(layer, 'Description'):
+                try:
+                    info['description'] = layer.Description
+                except Exception:
+                    pass
+            layers.append(info)
+        return json.dumps(layers, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取图层列表失败: {str(e)}"
+
+
+@mcp.tool
+def add_layer(name: str, color: int = 7,
+              linetype: str = "Continuous",
+              description: str = "") -> str:
+    """
+    创建新图层
+
+    参数:
+    - name: 图层名称
+    - color: 颜色索引号（可选，默认7=白色）
+    - linetype: 线型名称（可选，默认"Continuous"）
+    - description: 图层描述（可选）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        layer = zcad_conn.doc.Layers.Add(name)
+        layer.color = color
+        layer.Linetype = linetype
+        if description and hasattr(layer, 'Description'):
+            layer.Description = description
+        return f"成功创建图层: '{name}', 颜色={color}, 线型={linetype}"
+    except Exception as e:
+        return _format_error("创建图层", e)
+
+
+@mcp.tool
+def set_active_layer(name: str) -> str:
+    """
+    设置当前活动图层
+
+    参数:
+    - name: 图层名称
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        layer = zcad_conn.doc.Layers.Item(name)
+        zcad_conn.doc.ActiveLayer = layer
+        return f"成功设置活动图层: '{name}'"
+    except Exception as e:
+        return _format_error("设置活动图层", e)
+
+
+@mcp.tool
+def set_layer_properties(name: str,
+                         on: bool = None,
+                         freeze: bool = None,
+                         lock: bool = None,
+                         color: int = None,
+                         linetype: str = None) -> str:
+    """
+    设置图层属性
+
+    参数:
+    - name: 图层名称
+    - on: 图层是否打开（可选）
+    - freeze: 图层是否冻结（可选）
+    - lock: 图层是否锁定（可选）
+    - color: 颜色索引号（可选）
+    - linetype: 线型名称（可选）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        layer = zcad_conn.doc.Layers.Item(name)
+        updated = []
+        if on is not None:
+            layer.LayerOn = on
+            updated.append(f"on={on}")
+        if freeze is not None:
+            layer.Freeze = freeze
+            updated.append(f"freeze={freeze}")
+        if lock is not None:
+            layer.Lock = lock
+            updated.append(f"lock={lock}")
+        if color is not None:
+            layer.color = color
+            updated.append(f"color={color}")
+        if linetype is not None:
+            layer.Linetype = linetype
+            updated.append(f"linetype={linetype}")
+        if updated:
+            return f"成功更新图层 '{name}': {', '.join(updated)}"
+        return "未提供任何要更新的属性"
+    except Exception as e:
+        return _format_error("设置图层属性", e)
+
+
+# ==========================================
+# 线型/文字样式/标注样式管理工具
+# ==========================================
+
+@mcp.tool
+def list_linetypes() -> str:
+    """
+    获取当前文档的所有线型列表
+
+    返回: JSON 格式的线型列表
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        linetypes = []
+        for lt in zcad_conn.doc.Linetypes:
+            info = {"name": lt.Name}
+            if hasattr(lt, 'Description'):
+                try:
+                    info['description'] = lt.Description
+                except Exception:
+                    pass
+            linetypes.append(info)
+        return json.dumps(linetypes, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取线型列表失败: {str(e)}"
+
+
+@mcp.tool
+def load_linetype(name: str, filename: str = "acad.lin") -> str:
+    """
+    从线型文件加载线型
+
+    参数:
+    - name: 线型名称
+    - filename: 线型文件名（可选，默认"acad.lin"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.Linetypes.Load(name, filename)
+        return f"成功加载线型: '{name}' (文件: {filename})"
+    except Exception as e:
+        return _format_error("加载线型", e)
+
+
+@mcp.tool
+def list_textstyles() -> str:
+    """
+    获取当前文档的所有文字样式列表
+
+    返回: JSON 格式的文字样式列表
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        styles = []
+        for ts in zcad_conn.doc.TextStyles:
+            info = {
+                "name": ts.Name,
+                "font_file": ts.fontFile if hasattr(ts, 'fontFile') else "",
+                "height": ts.Height if hasattr(ts, 'Height') else 0,
+                "width": ts.Width if hasattr(ts, 'Width') else 1.0,
+                "oblique_angle": ts.ObliqueAngle if hasattr(ts, 'ObliqueAngle') else 0
+            }
+            styles.append(info)
+        return json.dumps(styles, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取文字样式列表失败: {str(e)}"
+
+
+@mcp.tool
+def add_textstyle(name: str, font_file: str = "txt.shx",
+                  big_font_file: str = "hztxt.shx",
+                  height: float = 0) -> str:
+    """
+    创建新的文字样式
+
+    参数:
+    - name: 样式名称
+    - font_file: 字体文件名（可选，默认"txt.shx"）
+    - big_font_file: 大字体文件名（可选，默认"hztxt.shx"）
+    - height: 固定文字高度（可选，0=不固定）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        ts = zcad_conn.doc.TextStyles.Add(name)
+        if font_file:
+            ts.fontFile = font_file
+        if big_font_file and hasattr(ts, 'BigFontFile'):
+            ts.BigFontFile = big_font_file
+        if height > 0:
+            ts.Height = height
+        return f"成功创建文字样式: '{name}', 字体={font_file}, 大字体={big_font_file}"
+    except Exception as e:
+        return _format_error("创建文字样式", e)
+
+
+@mcp.tool
+def list_dimstyles() -> str:
+    """
+    获取当前文档的所有标注样式列表
+
+    返回: JSON 格式的标注样式列表
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        styles = []
+        for ds in zcad_conn.doc.DimStyles:
+            styles.append({"name": ds.Name})
+        return json.dumps(styles, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取标注样式列表失败: {str(e)}"
+
+
+@mcp.tool
+def add_dimstyle(name: str) -> str:
+    """
+    创建新的标注样式
+
+    参数:
+    - name: 样式名称
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.DimStyles.Add(name)
+        return f"成功创建标注样式: '{name}'"
+    except Exception as e:
+        return _format_error("创建标注样式", e)
+
+
+# ==========================================
+# 图块管理工具（来自 IZcadBlocks / IZcadBlock COM 接口）
+# ==========================================
+
+@mcp.tool
+def list_blocks() -> str:
+    """
+    获取当前文档的所有图块定义列表
+
+    返回: JSON 格式的图块列表
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        blocks = []
+        for blk in zcad_conn.doc.Blocks:
+            info = {
+                "name": blk.Name,
+                "is_layout": blk.IsLayout if hasattr(blk, 'IsLayout') else False,
+                "is_xref": blk.IsXRef if hasattr(blk, 'IsXRef') else False,
+                "count": blk.Count if hasattr(blk, 'Count') else 0
+            }
+            if hasattr(blk, 'Origin'):
+                try:
+                    origin = blk.Origin
+                    info['origin'] = list(origin)
+                except Exception:
+                    pass
+            blocks.append(info)
+        return json.dumps(blocks, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取图块列表失败: {str(e)}"
+
+
+@mcp.tool
+def get_block_info(name: str) -> str:
+    """
+    获取指定图块的详细信息
+
+    参数:
+    - name: 图块名称
+
+    返回: JSON 格式的图块信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        blk = zcad_conn.doc.Blocks.Item(name)
+        info = {
+            "name": blk.Name,
+            "count": blk.Count,
+            "is_layout": blk.IsLayout if hasattr(blk, 'IsLayout') else False,
+            "is_xref": blk.IsXRef if hasattr(blk, 'IsXRef') else False,
+            "is_dynamic": blk.IsDynamicBlock if hasattr(blk, 'IsDynamicBlock') else False
+        }
+        if hasattr(blk, 'Origin'):
+            try:
+                info['origin'] = list(blk.Origin)
+            except Exception:
+                pass
+        if hasattr(blk, 'Comments'):
+            try:
+                info['comments'] = blk.Comments
+            except Exception:
+                pass
+        if hasattr(blk, 'Path'):
+            try:
+                info['path'] = blk.Path
+            except Exception:
+                pass
+        return json.dumps(info, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取图块信息失败: {str(e)}"
+
+
+@mcp.tool
+def get_block_attributes(block_name: str, property_name: str, property_value: str) -> str:
+    """
+    获取图块引用的属性值
+
+    参数:
+    - block_name: 图块类型名称
+    - property_name: 用于定位图块引用的属性名（如 "Layer"）
+    - property_value: 属性值
+
+    返回: JSON 格式的属性列表
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        def predicate(obj):
+            if hasattr(obj, 'Name') and obj.Name == block_name:
+                if hasattr(obj, property_name):
+                    return str(getattr(obj, property_name)) == property_value
+            return False
+
+        obj = zcad_conn.find_one("BlockReference", predicate=predicate)
+        if not obj:
+            return f"未找到符合条件的图块引用: {block_name}"
+
+        attrs = obj.GetAttributes()
+        result = []
+        for attr in attrs:
+            result.append({
+                "tag": attr.TagString if hasattr(attr, 'TagString') else "",
+                "text": attr.TextString if hasattr(attr, 'TextString') else "",
+            })
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"获取图块属性失败: {str(e)}"
+
+
+# ==========================================
+# 文档/应用程序工具（来自 IZcadDocument / IZcadApplication COM 接口）
+# ==========================================
+
+@mcp.tool
+def zoom_extents() -> str:
+    """
+    缩放到图形范围（Zoom Extents）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.app.ZoomExtents()
+        return "成功执行 Zoom Extents"
+    except Exception as e:
+        return _format_error("Zoom Extents", e)
+
+
+@mcp.tool
+def zoom_all() -> str:
+    """
+    缩放显示全部图形（Zoom All）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.app.ZoomAll()
+        return "成功执行 Zoom All"
+    except Exception as e:
+        return _format_error("Zoom All", e)
+
+
+@mcp.tool
+def zoom_window(x1: float, y1: float, x2: float, y2: float) -> str:
+    """
+    窗口缩放（Zoom Window）
+
+    参数:
+    - x1, y1: 窗口左下角坐标
+    - x2, y2: 窗口右上角坐标
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        lower_left = APoint(x1, y1, 0)
+        upper_right = APoint(x2, y2, 0)
+        zcad_conn.app.ZoomWindow(lower_left, upper_right)
+        return f"成功执行 Zoom Window: ({x1},{y1})-({x2},{y2})"
+    except Exception as e:
+        return _format_error("Zoom Window", e)
+
+
+@mcp.tool
+def zoom_center(center_x: float, center_y: float, magnify: float = 1.0) -> str:
+    """
+    中心缩放（Zoom Center）
+
+    参数:
+    - center_x, center_y: 中心点坐标
+    - magnify: 放大倍数（可选，默认1.0）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        center = APoint(center_x, center_y, 0)
+        zcad_conn.app.ZoomCenter(center, magnify)
+        return f"成功执行 Zoom Center: ({center_x},{center_y}), 倍数={magnify}"
+    except Exception as e:
+        return _format_error("Zoom Center", e)
+
+
+@mcp.tool
+def get_variable(name: str) -> str:
+    """
+    获取ZWCAD系统变量的值
+
+    参数:
+    - name: 系统变量名称（如 "DIMSCALE", "TEXTSIZE", "LUNITS" 等）
+
+    返回: 变量值
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        value = zcad_conn.doc.GetVariable(name)
+        return f"系统变量 '{name}' = {value}"
+    except Exception as e:
+        return f"获取系统变量失败: {str(e)}"
+
+
+@mcp.tool
+def set_variable(name: str, value) -> str:
+    """
+    设置ZWCAD系统变量的值
+
+    参数:
+    - name: 系统变量名称
+    - value: 要设置的值（字符串或数字）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.SetVariable(name, value)
+        return f"成功设置系统变量 '{name}' = {value}"
+    except Exception as e:
+        return _format_error("设置系统变量", e)
+
+
+@mcp.tool
+def send_command(command: str) -> str:
+    """
+    向ZWCAD发送命令行命令（SendCommand）
+
+    参数:
+    - command: 命令字符串（如 "._LINE 0,0 100,100 "）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.SendCommand(command)
+        return f"命令已发送: {command}"
+    except Exception as e:
+        return _format_error("发送命令", e)
+
+
+@mcp.tool
+def get_application_info() -> str:
+    """
+    获取ZWCAD应用程序信息（版本、路径、窗口状态等）
+
+    返回: JSON 格式的应用程序信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        app = zcad_conn.app
+        info = {
+            "name": app.Name,
+            "version": app.Version,
+            "full_name": app.FullName,
+            "path": app.Path,
+            "visible": app.Visible,
+            "hwnd": app.HWND if hasattr(app, 'HWND') else None
+        }
+        if hasattr(app, 'WindowState'):
+            info['window_state'] = app.WindowState
+        if hasattr(app, 'Caption'):
+            info['caption'] = app.Caption
+        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        return f"获取应用程序信息失败: {str(e)}"
+
+
+@mcp.tool
+def plot_to_file(plot_file: str, plot_config: str = "") -> str:
+    """
+    打印到文件
+
+    参数:
+    - plot_file: 输出文件路径（如 "C:\\output\\drawing.pdf"）
+    - plot_config: 打印配置名称（可选，使用默认配置）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        plot = zcad_conn.doc.Plot
+        if plot_config:
+            plot.PlotToFile(plot_file, plot_config)
+        else:
+            plot.PlotToFile(plot_file)
+        return f"成功打印到文件: {plot_file}"
+    except Exception as e:
+        return _format_error("打印到文件", e)
+
+
+@mcp.tool
+def regen_viewport(which: int = 0) -> str:
+    """
+    重生成视口显示
+
+    参数:
+    - which: 重生成范围（0=活动视口，1=所有视口）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.Regen(which)
+        return f"成功重生成视口 (which={which})"
+    except Exception as e:
+        return _format_error("重生成视口", e)
+
+
+@mcp.tool
+def purge_all() -> str:
+    """
+    清除当前文档中所有未使用的命名对象（图层、图块、样式等）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.PurgeAll()
+        return "成功清除所有未使用的命名对象"
+    except Exception as e:
+        return _format_error("清除命名对象", e)
+
+
+@mcp.tool
+def set_active_textstyle(name: str) -> str:
+    """
+    设置当前活动文字样式
+
+    参数:
+    - name: 文字样式名称
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        ts = zcad_conn.doc.TextStyles.Item(name)
+        zcad_conn.doc.ActiveTextStyle = ts
+        return f"成功设置活动文字样式: '{name}'"
+    except Exception as e:
+        return _format_error("设置活动文字样式", e)
+
+
+@mcp.tool
+def set_active_dimstyle(name: str) -> str:
+    """
+    设置当前活动标注样式
+
+    参数:
+    - name: 标注样式名称
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        ds = zcad_conn.doc.DimStyles.Item(name)
+        zcad_conn.doc.ActiveDimStyle = ds
+        return f"成功设置活动标注样式: '{name}'"
+    except Exception as e:
+        return _format_error("设置活动标注样式", e)
+
+
+@mcp.tool
+def set_active_linetype(name: str) -> str:
+    """
+    设置当前活动线型
+
+    参数:
+    - name: 线型名称
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        lt = zcad_conn.doc.Linetypes.Item(name)
+        zcad_conn.doc.ActiveLinetype = lt
+        return f"成功设置活动线型: '{name}'"
+    except Exception as e:
+        return _format_error("设置活动线型", e)
+
+
+@mcp.tool
+def undo_mark_start() -> str:
+    """
+    开始撤销标记（StartUndoMark）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.StartUndoMark()
+        return "撤销标记已开始"
+    except Exception as e:
+        return _format_error("开始撤销标记", e)
+
+
+@mcp.tool
+def undo_mark_end() -> str:
+    """
+    结束撤销标记（EndUndoMark）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        zcad_conn.doc.EndUndoMark()
+        return "撤销标记已结束"
+    except Exception as e:
+        return _format_error("结束撤销标记", e)
+
+
+@mcp.tool
+def add_hatch(pattern_type: int, pattern_name: str,
+              outer_loop_objects: list,
+              associativity: bool = True,
+              layer: str = "0",
+              pattern_scale: float = 1.0,
+              pattern_angle: float = 0) -> str:
+    """
+    添加填充图案
+
+    参数:
+    - pattern_type: 图案类型（0=预定义，1=用户定义，2=自定义）
+    - pattern_name: 图案名称（如 "ANSI31", "SOLID" 等）
+    - outer_loop_objects: 外边界对象ID列表（需为有效的COM对象数组）
+    - associativity: 是否关联（可选，默认True）
+    - layer: 图层名称（可选，默认为"0"）
+    - pattern_scale: 图案缩放比例（可选，默认1.0）
+    - pattern_angle: 图案角度（弧度，可选，默认0）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        hatch = zcad_conn.model.AddHatch(pattern_type, pattern_name, associativity)
+        hatch.Layer = layer
+        hatch.PatternScale = pattern_scale
+        hatch.PatternAngle = pattern_angle
+
+        # 构建外边界环
+        if outer_loop_objects:
+            obj_array = []
+            for obj_id in outer_loop_objects:
+                try:
+                    obj = zcad_conn.doc.ObjectIdToObject(obj_id)
+                    obj_array.append(obj)
+                except Exception:
+                    pass
+            if obj_array:
+                hatch.AppendOuterLoop(obj_array)
+                hatch.Evaluate()
+
+        return f"成功添加填充: 图案='{pattern_name}', 类型={pattern_type}, 比例={pattern_scale}"
+    except Exception as e:
+        return _format_error("添加填充", e)
+
+
+@mcp.tool
+def add_leader(points: list, annotation_type: int = 0,
+               layer: str = "0") -> str:
+    """
+    添加引线标注
+
+    参数:
+    - points: 引线点列表，格式为 [[x1,y1,z1], [x2,y2,z2], ...] 或 [x1,y1,z1,x2,y2,z2,...]
+    - annotation_type: 注释类型（0=无，1=文字，2=图块，3=公差）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        flat = []
+        for v in points:
+            if isinstance(v, (list, tuple)):
+                flat.extend(v)
+            else:
+                flat.append(v)
+        coords = aDouble(*flat)
+        leader = zcad_conn.model.AddLeader(coords, None, annotation_type)
+        leader.Layer = layer
+        return f"成功添加引线: {len(flat)//3}个点, 注释类型={annotation_type}，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加引线", e)
+
+
+@mcp.tool
+def add_tolerance(text: str, x: float, y: float, z: float,
+                  dir_x: float = 0, dir_y: float = 0, dir_z: float = 1,
+                  layer: str = "0") -> str:
+    """
+    添加形位公差标注
+
+    参数:
+    - text: 公差文本
+    - x, y, z: 插入点坐标
+    - dir_x, dir_y, dir_z: 方向向量（可选，默认Z方向）
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = APoint(x, y, z)
+        direction = APoint(dir_x, dir_y, dir_z)
+        tol = zcad_conn.model.AddTolerance(text, point, direction)
+        tol.Layer = layer
+        return f"成功添加形位公差: '{text}' at ({x},{y},{z})，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加形位公差", e)
+
+
+@mcp.tool
+def add_table(x: float, y: float, z: float,
+              rows: int, cols: int,
+              row_height: float, col_width: float,
+              layer: str = "0") -> str:
+    """
+    添加表格对象
+
+    参数:
+    - x, y, z: 插入点坐标
+    - rows: 行数
+    - cols: 列数
+    - row_height: 行高
+    - col_width: 列宽
+    - layer: 图层名称（可选，默认为"0"）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = APoint(x, y, z)
+        table = zcad_conn.model.AddTable(point, rows, cols, row_height, col_width)
+        table.Layer = layer
+        return f"成功添加表格: {rows}行×{cols}列 at ({x},{y},{z})，图层: {layer}"
+    except Exception as e:
+        return _format_error("添加表格", e)
+
+
+@mcp.tool
+def translate_coordinates(x: float, y: float, z: float,
+                          from_system: int, to_system: int,
+                          displacement: bool = False) -> str:
+    """
+    坐标系转换
+
+    参数:
+    - x, y, z: 要转换的坐标
+    - from_system: 源坐标系（0=WCS，1=UCS，2=OCS，3=DSC，4=PCS）
+    - to_system: 目标坐标系（0=WCS，1=UCS，2=OCS，3=DSC，4=PCS）
+    - displacement: 是否为位移向量（可选，默认False）
+
+    返回: 转换后的坐标
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = aDouble(x, y, z)
+        result = zcad_conn.doc.Utility.TranslateCoordinates(
+            point, from_system, to_system, displacement
+        )
+        coords = list(result)
+        return json.dumps({"x": coords[0], "y": coords[1], "z": coords[2] if len(coords) > 2 else 0}, indent=2)
+    except Exception as e:
+        return _format_error("坐标转换", e)
+
+
+@mcp.tool
+def export_drawing(filename: str, extension: str = "DWG") -> str:
+    """
+    导出当前文档到指定格式
+
+    参数:
+    - filename: 导出文件路径
+    - extension: 导出格式扩展名（"DWG", "DXF", "BMP", "WMF" 等）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        # 创建选择集用于导出
+        sel_set_name = "ExportSelSet"
+        try:
+            sel = zcad_conn.doc.SelectionSets.Item(sel_set_name)
+            sel.Delete()
+        except Exception:
+            pass
+        sel = zcad_conn.doc.SelectionSets.Add(sel_set_name)
+        sel.Select(5)  # acSelectionSetAll
+        zcad_conn.doc.Export(filename, extension, sel)
+        # 清理选择集
+        try:
+            sel.Delete()
+        except Exception:
+            pass
+        return f"成功导出: {filename} (格式: {extension})"
+    except Exception as e:
+        return _format_error("导出文档", e)
+
+
+@mcp.tool
+def import_file(filename: str, x: float = 0, y: float = 0, z: float = 0,
+                scale_factor: float = 1.0) -> str:
+    """
+    导入文件到当前文档
+
+    参数:
+    - filename: 导入文件路径
+    - x, y, z: 插入点坐标（可选，默认原点）
+    - scale_factor: 缩放比例（可选，默认1.0）
+
+    返回: 操作结果信息
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+        point = APoint(x, y, z)
+        zcad_conn.doc.Import(filename, point, scale_factor)
+        return f"成功导入文件: {filename} at ({x},{y},{z}), 比例={scale_factor}"
+    except Exception as e:
+        return _format_error("导入文件", e)
 
 
 # ==========================================
