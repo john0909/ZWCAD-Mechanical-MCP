@@ -557,7 +557,7 @@ https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
 ## Requirements
 
 - **OS**: Windows 10/11
-- **CAD Software**: [ZWCAD Mechanical 2027](https://www.zwsoft.com/product/zwcad/mfg) installed and running
+- **CAD Software**: [ZWCAD Mechanical 2026](https://www.zwsoft.com/product/zwcad/mfg) installed and running
 - **Python**: 3.9+
 
 ## Quick Start
@@ -570,7 +570,7 @@ pip install -r requirements.txt
 
 ### 2. Launch ZWCAD Mechanical
 
-Make sure ZWCAD Mechanical 2027 is running with a DWG file open.
+Make sure ZWCAD Mechanical 2026 is running with a DWG file open.
 
 ### 3. Start the MCP Server
 
