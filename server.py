@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 强制使用 STA 线程模型以支持 COM 调用
+# 使用 STA 线程模型以支持 COM 调用
 try:
     pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
 except Exception:
@@ -141,7 +141,7 @@ def _com_error_hint(error_msg: str) -> str:
     """为 COM 初始化错误追加解决方案提示"""
     return error_msg + (
         "\n\n解决方案："
-        "\n1. 确保 ZWCAD Mechanical 2027 已启动并运行"
+        "\n1. 确保 ZWCAD Mechanical 2026 已启动并运行"
         "\n2. 如果问题仍然存在，请重启 ZWCAD 和 MCP Server"
         "\n3. 检查系统是否正确安装了 pywin32 和 comtypes 库"
     )
@@ -153,6 +153,48 @@ def _format_error(action: str, e: Exception) -> str:
     if "CoInitialize" in str(e) or "-2147221008" in str(e):
         error_msg = _com_error_hint(error_msg)
     return error_msg
+
+
+def _ok(message: str, **data) -> str:
+    """统一成功响应：返回 JSON 字符串 {ok:true, message, ...data}"""
+    result = {"ok": True, "message": message}
+    result.update(data)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _err(action: str, e: Exception) -> str:
+    """统一错误响应：返回 JSON 字符串 {ok:false, error, error_code}，COM 错误附加提示"""
+    err_str = str(e)
+    error_code = "COM_INIT_ERROR" if ("CoInitialize" in err_str or "-2147221008" in err_str) else "OPERATION_ERROR"
+    msg = f"{action}失败: {err_str}"
+    result = {"ok": False, "error": msg, "error_code": error_code}
+    if error_code == "COM_INIT_ERROR":
+        result["hint"] = (
+            "1. 确保 中望机械 2026 已启动并运行; "
+            "2. 重启 ZWCAD 和 MCP Server; "
+            "3. 检查 pywin32 和 comtypes 库"
+        )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _find_entity(zcad_conn, object_type: str = None,
+                 property_name: str = None, property_value: str = None,
+                 handle: str = None, predicate=None):
+    """统一实体查找：优先按 handle 精确定位，其次按 property 遍历匹配"""
+    if handle:
+        try:
+            return zcad_conn.doc.HandleToObject(handle)
+        except Exception:
+            return None
+    if predicate:
+        return zcad_conn.find_one(object_type, predicate=predicate)
+    if property_name and property_value is not None:
+        def _prop_pred(obj):
+            if hasattr(obj, property_name):
+                return str(getattr(obj, property_name)) == str(property_value)
+            return False
+        return zcad_conn.find_one(object_type, predicate=_prop_pred)
+    return None
 
 
 # ==========================================
@@ -179,9 +221,10 @@ def draw_line(x1: float, y1: float, z1: float,
         p2 = APoint(x2, y2, z2)
         line = zcad_conn.model.AddLine(p1, p2)
         line.Layer = layer
-        return f"成功绘制直线: ({x1},{y1},{z1}) -> ({x2},{y2},{z2})，图层: {layer}"
+        return _ok(f"成功绘制直线: ({x1},{y1},{z1}) -> ({x2},{y2},{z2})",
+                   handle=line.Handle, layer=layer)
     except Exception as e:
-        return _format_error("绘制直线", e)
+        return _err("绘制直线", e)
 
 
 @mcp.tool
@@ -202,9 +245,10 @@ def draw_circle(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         circle = zcad_conn.model.AddCircle(center, radius)
         circle.Layer = layer
-        return f"成功绘制圆: 圆心({center_x},{center_y},{center_z}), 半径={radius}，图层: {layer}"
+        return _ok(f"成功绘制圆: 圆心({center_x},{center_y},{center_z}), 半径={radius}",
+                   handle=circle.Handle, layer=layer)
     except Exception as e:
-        return _format_error("绘制圆", e)
+        return _err("绘制圆", e)
 
 
 @mcp.tool
@@ -224,9 +268,10 @@ def add_text(text: str, x: float, y: float, z: float,
         zcad_conn, _ = get_cad_connection()
         point = APoint(x, y, z)
         text_obj = zcad_conn.model.AddText(text, point, height)
-        return f"成功添加文本: '{text}' at ({x},{y},{z})，字高: {height}"
+        return _ok(f"成功添加文本: '{text}' at ({x},{y},{z})",
+                   handle=text_obj.Handle, height=height)
     except Exception as e:
-        return _format_error("添加文本", e)
+        return _err("添加文本", e)
 
 
 @mcp.tool
@@ -242,9 +287,9 @@ def save_drawing(file_path: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.SaveAs(file_path)
-        return f"图纸已保存至: {file_path}"
+        return _ok(f"图纸已保存至: {file_path}", path=file_path)
     except Exception as e:
-        return f"保存图纸失败: {str(e)}"
+        return _err("保存图纸", e)
 
 
 @mcp.tool
@@ -260,28 +305,24 @@ def close_current_document(save_changes: bool = True) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Close(save_changes)
-        return "当前图纸已关闭"
+        return _ok("当前图纸已关闭", saved=save_changes)
     except Exception as e:
-        return f"关闭图纸失败: {str(e)}"
+        return _err("关闭图纸", e)
 
 
 @mcp.tool
 def new_drawing() -> str:
     """
     创建新的空白图纸
-    
+
     返回: 操作结果信息
     """
     try:
-        # 清除缓存强制新建
-        reset_connection()
-
-        # 重新建立连接
-        zcad_conn, mech_conn = get_cad_connection()
-
-        return f"已连接图纸\n文档: {zcad_conn.doc.Name}"
+        zcad_conn, _ = get_cad_connection()
+        new_doc = zcad_conn.app.Documents.Add()
+        return _ok(f"成功创建新图纸: {new_doc.Name}", document=new_doc.Name)
     except Exception as e:
-        return f"连接图纸失败: {str(e)}"
+        return _err("创建新图纸", e)
 
 
 @mcp.tool
@@ -303,9 +344,9 @@ def get_document_info() -> str:
             "readonly": doc.ReadOnly
         }
         
-        return json.dumps(info, ensure_ascii=False, indent=2)
+        return _ok("获取文档信息成功", data=info)
     except Exception as e:
-        return f"获取文档信息失败: {str(e)}"
+        return _err("获取文档信息", e)
 
 
 @mcp.tool
@@ -329,9 +370,9 @@ def get_layouts(include_model: bool = False) -> str:
                 "is_model_space": layout.ModelSpace
             })
         
-        return json.dumps(layouts, ensure_ascii=False, indent=2)
+        return _ok("获取布局列表成功", data=layouts)
     except Exception as e:
-        return f"获取布局列表失败: {str(e)}"
+        return _err("获取布局列表", e)
 
 
 @mcp.tool
@@ -365,18 +406,14 @@ def get_objects_in_model(object_type: str = None, limit: int = None) -> str:
             objects.append(obj_info)
             count += 1
         
-        result = {
-            "total_count": count,
-            "objects": objects
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取对象列表成功", total_count=count, data=objects)
     except Exception as e:
-        return f"获取对象列表失败: {str(e)}"
+        return _err("获取对象列表", e)
 
 
 @mcp.tool
-def find_object(object_type: str, property_name: str, property_value: str) -> str:
+def find_object(object_type: str, property_name: str, property_value: str,
+                handle: str = None) -> str:
     """
     查找符合条件的第一个对象
     
@@ -384,30 +421,28 @@ def find_object(object_type: str, property_name: str, property_value: str) -> st
     - object_type: 对象类型（如 "Line", "Circle" 等）
     - property_name: 属性名称（如 "Layer", "Color" 等）
     - property_value: 属性值
+    - handle: 实体句柄（可选，优先于属性定位）
     
     返回: JSON 格式的对象信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
         
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-        
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         
         if obj:
             obj_info = {
-                "found": True,
                 "object_name": obj.ObjectName,
+                "handle": obj.Handle if hasattr(obj, 'Handle') else None,
                 "layer": obj.Layer if hasattr(obj, 'Layer') else "N/A"
             }
-            return json.dumps(obj_info, ensure_ascii=False, indent=2)
+            return _ok("查找到对象", found=True, data=obj_info)
         else:
-            return json.dumps({"found": False}, indent=2)
+            return _ok("未找到匹配对象", found=False)
     except Exception as e:
-        return f"查找对象失败: {str(e)}"
+        return _err("查找对象", e)
 
 
 @mcp.tool
@@ -423,9 +458,9 @@ def send_prompt(text: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.prompt(text)
-        return f"成功发送提示文本: {text}"
+        return _ok(f"成功发送提示文本: {text}")
     except Exception as e:
-        return f"发送提示失败: {str(e)}"
+        return _err("发送提示", e)
 
 
 @mcp.tool
@@ -445,9 +480,9 @@ def get_active_layout() -> str:
             "is_model_space": layout.ModelSpace
         }
         
-        return json.dumps(info, ensure_ascii=False, indent=2)
+        return _ok("获取活动布局成功", data=info)
     except Exception as e:
-        return f"获取活动布局失败: {str(e)}"
+        return _err("获取活动布局", e)
 
 
 # ==========================================
@@ -467,7 +502,7 @@ def get_title_block_info() -> str:
         title = mech_conn.get_title()
         
         if not title:
-            return "未找到标题栏对象"
+            return _ok("未找到标题栏对象", found=False)
         
         items = []
         count = title.get_item_count()
@@ -480,9 +515,9 @@ def get_title_block_info() -> str:
                 "value": value
             })
         
-        return json.dumps(items, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=items)
     except Exception as e:
-        return f"读取标题栏失败: {str(e)}"
+        return _err("读取标题栏", e)
 
 
 @mcp.tool
@@ -502,7 +537,7 @@ def set_title_block_field(field_name: str, value: str) -> str:
         title = mech_conn.get_title()
         
         if not title:
-            return "未找到标题栏对象"
+            return _ok("未找到标题栏对象", found=False)
         
         # 设置字段值（使用字段标签或名称）
         title.set_item(field_name, value)
@@ -510,9 +545,9 @@ def set_title_block_field(field_name: str, value: str) -> str:
         # 刷新标题栏显示
         mech_conn.zwm_db.refresh_title()
         
-        return f"成功设置标题栏字段 '{field_name}' = '{value}'"
+        return _ok(f"成功设置标题栏字段 '{field_name}' = '{value}'")
     except Exception as e:
-        return f"设置标题栏字段失败: {str(e)}"
+        return _err("设置标题栏字段", e)
 
 
 @mcp.tool
@@ -532,7 +567,7 @@ def update_title_block_batch(fields: dict) -> str:
         title = mech_conn.get_title()
         
         if not title:
-            return "未找到标题栏对象"
+            return _ok("未找到标题栏对象", found=False)
         
         results = []
         for field_name, value in fields.items():
@@ -542,9 +577,9 @@ def update_title_block_batch(fields: dict) -> str:
         # 刷新标题栏显示
         mech_conn.zwm_db.refresh_title()
         
-        return f"成功批量更新标题栏: {', '.join(results)}"
+        return _ok(f"成功批量更新标题栏: {', '.join(results)}")
     except Exception as e:
-        return f"批量更新标题栏失败: {str(e)}"
+        return _err("批量更新标题栏", e)
 
 
 @mcp.tool
@@ -560,12 +595,12 @@ def get_title_field_count() -> str:
         title = mech_conn.get_title()
         
         if not title:
-            return "未找到标题栏对象"
+            return _ok("未找到标题栏对象", found=False)
         
         count = title.get_item_count()
-        return f"标题栏字段总数: {count}"
+        return _ok("获取标题栏字段总数成功", count=count)
     except Exception as e:
-        return f"获取标题栏字段数量失败: {str(e)}"
+        return _err("获取标题栏字段数量", e)
 
 
 @mcp.tool
@@ -584,7 +619,7 @@ def get_title_item_by_index(index: int) -> str:
         title = mech_conn.get_title()
         
         if not title:
-            return "未找到标题栏对象"
+            return _ok("未找到标题栏对象", found=False)
         
         label, name, value = title.get_item(index)
         
@@ -595,9 +630,9 @@ def get_title_item_by_index(index: int) -> str:
             "value": value
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return f"获取标题栏字段失败: {str(e)}"
+        return _err("获取标题栏字段", e)
 
 
 # ==========================================
@@ -626,9 +661,9 @@ def get_available_frames() -> str:
             name = mech_conn.zwm_db.get_frame_name(i)
             frames.append(name)
         
-        return json.dumps(frames, ensure_ascii=False, indent=2)
+        return _ok("获取图框列表成功", data=frames)
     except Exception as e:
-        return f"获取图框列表失败: {str(e)}"
+        return _err("获取图框列表", e)
 
 
 @mcp.tool
@@ -644,7 +679,7 @@ def get_frame_full_info() -> str:
         frame = mech_conn.zwm_db.get_frame()
         
         if not frame:
-            return "未找到图框对象"
+            return _ok("未找到图框对象", found=False)
         
         # 获取所有图框属性
         info = {}
@@ -695,9 +730,9 @@ def get_frame_full_info() -> str:
         if hasattr(frame, 'scale2'):
             info['scale2'] = frame.scale2
         
-        return json.dumps(info, ensure_ascii=False, indent=2)
+        return _ok("获取图框完整信息成功", data=info)
     except Exception as e:
-        return f"获取图框完整信息失败: {str(e)}"
+        return _err("获取图框完整信息", e)
 
 
 @mcp.tool
@@ -754,7 +789,7 @@ def update_frame_properties(
         frame = mech_conn.zwm_db.get_frame()
         
         if not frame:
-            return "未找到图框对象"
+            return _ok("未找到图框对象", found=False)
         
         updated = []
 
@@ -779,12 +814,12 @@ def update_frame_properties(
         mech_conn.zwm_db.refresh_frame()
         
         if updated:
-            return f"成功更新图框属性: {', '.join(updated)}"
+            return _ok(f"成功更新图框属性: {', '.join(updated)}")
         else:
-            return "未提供任何要更新的属性"
+            return _ok("未提供任何要更新的属性")
             
     except Exception as e:
-        return f"更新图框属性失败: {str(e)}"
+        return _err("更新图框属性", e)
 
 
 @mcp.tool
@@ -798,9 +833,9 @@ def get_frame_count() -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         count = mech_conn.zwm_db.get_frame_count()
-        return f"图框总数: {count}"
+        return _ok("获取图框总数成功", count=count)
     except Exception as e:
-        return f"获取图框数量失败: {str(e)}"
+        return _err("获取图框数量", e)
 
 
 @mcp.tool
@@ -817,9 +852,9 @@ def get_frame_name_by_index(index: int) -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         name = mech_conn.zwm_db.get_frame_name(index)
-        return f"索引 {index} 的图框名称: {name}"
+        return _ok("获取图框名称成功", index=index, name=name)
     except Exception as e:
-        return f"获取图框名称失败: {str(e)}"
+        return _err("获取图框名称", e)
 
 
 @mcp.tool
@@ -839,9 +874,9 @@ def get_frame_name_by_point(x: float, y: float, z: float = 0) -> str:
         # 创建坐标点元组（comtypes需要）
         point = (x, y, z)
         name = mech_conn.zwm_db.get_frame_name2(point)
-        return f"坐标 ({x},{y},{z}) 处的图框名称: {name}"
+        return _ok("获取图框名称成功", x=x, y=y, z=z, name=name)
     except Exception as e:
-        return f"获取图框名称失败: {str(e)}"
+        return _err("获取图框名称", e)
 
 
 @mcp.tool
@@ -858,9 +893,9 @@ def switch_frame(frame_name: str) -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         mech_conn.zwm_db.switch_frame(frame_name)
-        return f"成功切换到图框: {frame_name}"
+        return _ok(f"成功切换到图框: {frame_name}")
     except Exception as e:
-        return f"切换图框失败: {str(e)}"
+        return _err("切换图框", e)
 
 @mcp.tool
 def refresh_frame() -> str:
@@ -873,9 +908,9 @@ def refresh_frame() -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         mech_conn.zwm_db.refresh_frame()
-        return "图框刷新成功"
+        return _ok("图框刷新成功")
     except Exception as e:
-        return f"刷新图框失败: {str(e)}"
+        return _err("刷新图框", e)
 
 
 # ==========================================
@@ -900,7 +935,7 @@ def add_bom_row(data: dict) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         # 创建新行
         new_row = bom.create_bom_row()
@@ -915,9 +950,9 @@ def add_bom_row(data: dict) -> str:
         # 刷新明细表显示
         mech_conn.zwm_db.refresh_bom()
         
-        return f"成功添加明细表行: {data}"
+        return _ok(f"成功添加明细表行: {data}")
     except Exception as e:
-        return f"添加明细表行失败: {str(e)}"
+        return _err("添加明细表行", e)
 
 
 @mcp.tool
@@ -933,12 +968,12 @@ def get_bom_row_count() -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         count = bom.get_item_count()
-        return f"明细表总行数: {count}"
+        return _ok("获取明细表行数成功", count=count)
     except Exception as e:
-        return f"获取明细表行数失败: {str(e)}"
+        return _err("获取明细表行数", e)
 
 
 @mcp.tool
@@ -957,11 +992,11 @@ def get_bom_row_data(row_index: int) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         row = bom.get_item(row_index)
         if not row:
-            return f"未找到索引 {row_index} 的行"
+            return _ok(f"未找到索引 {row_index} 的行", found=False)
         
         # 获取该行的所有字段
         fields = []
@@ -981,9 +1016,9 @@ def get_bom_row_data(row_index: int) -> str:
             "fields": fields
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return f"获取明细表行数据失败: {str(e)}"
+        return _err("获取明细表行数据", e)
 
 
 @mcp.tool
@@ -1003,11 +1038,11 @@ def update_bom_row(row_index: int, data: dict) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         row = bom.get_item(row_index)
         if not row:
-            return f"未找到索引 {row_index} 的行"
+            return _ok(f"未找到索引 {row_index} 的行", found=False)
         
         # 设置字段值
         for field_name, value in data.items():
@@ -1016,9 +1051,9 @@ def update_bom_row(row_index: int, data: dict) -> str:
         # 刷新明细表显示
         mech_conn.zwm_db.refresh_bom()
         
-        return f"成功更新明细表行 {row_index}: {data}"
+        return _ok(f"成功更新明细表行 {row_index}: {data}")
     except Exception as e:
-        return f"更新明细表行失败: {str(e)}"
+        return _err("更新明细表行", e)
 
 
 @mcp.tool
@@ -1038,7 +1073,7 @@ def insert_bom_row(index: int, data: dict) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         # 创建新行
         new_row = bom.create_bom_row()
@@ -1053,9 +1088,9 @@ def insert_bom_row(index: int, data: dict) -> str:
         # 刷新明细表显示
         mech_conn.zwm_db.refresh_bom()
         
-        return f"成功在位置 {index} 插入明细表行: {data}"
+        return _ok(f"成功在位置 {index} 插入明细表行: {data}")
     except Exception as e:
-        return f"插入明细表行失败: {str(e)}"
+        return _err("插入明细表行", e)
 
 
 @mcp.tool
@@ -1074,7 +1109,7 @@ def delete_bom_row(index: int) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         # 删除行
         bom.delete_item(index)
@@ -1082,9 +1117,9 @@ def delete_bom_row(index: int) -> str:
         # 刷新明细表显示
         mech_conn.zwm_db.refresh_bom()
         
-        return f"成功删除明细表行 {index}"
+        return _ok(f"成功删除明细表行 {index}")
     except Exception as e:
-        return f"删除明细表行失败: {str(e)}"
+        return _err("删除明细表行", e)
 
 
 @mcp.tool
@@ -1103,16 +1138,16 @@ def get_bom_row_field_count(row_index: int) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         row = bom.get_item(row_index)
         if not row:
-            return f"未找到索引 {row_index} 的行"
+            return _ok(f"未找到索引 {row_index} 的行", found=False)
         
         count = row.get_item_count()
-        return f"行 {row_index} 的字段数量: {count}"
+        return _ok("获取明细表字段数量成功", row_index=row_index, count=count)
     except Exception as e:
-        return f"获取字段数量失败: {str(e)}"
+        return _err("获取字段数量", e)
 
 
 @mcp.tool
@@ -1132,11 +1167,11 @@ def get_bom_row_field(row_index: int, field_index: int) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         row = bom.get_item(row_index)
         if not row:
-            return f"未找到索引 {row_index} 的行"
+            return _ok(f"未找到索引 {row_index} 的行", found=False)
         
         label, name, value = row.get_item(field_index)
         
@@ -1148,9 +1183,9 @@ def get_bom_row_field(row_index: int, field_index: int) -> str:
             "value": value
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return f"获取字段信息失败: {str(e)}"
+        return _err("获取字段信息", e)
 
 
 @mcp.tool
@@ -1171,11 +1206,11 @@ def set_bom_row_field(row_index: int, field_key: str, value: str) -> str:
         bom = mech_conn.zwm_db.get_bom()
         
         if not bom:
-            return "未找到明细表对象"
+            return _ok("未找到明细表对象", found=False)
         
         row = bom.get_item(row_index)
         if not row:
-            return f"未找到索引 {row_index} 的行"
+            return _ok(f"未找到索引 {row_index} 的行", found=False)
         
         # 设置字段值
         row.set_item(field_key, value)
@@ -1183,9 +1218,9 @@ def set_bom_row_field(row_index: int, field_key: str, value: str) -> str:
         # 刷新明细表显示
         mech_conn.zwm_db.refresh_bom()
         
-        return f"成功设置行 {row_index} 的字段 '{field_key}' = '{value}'"
+        return _ok(f"成功设置行 {row_index} 的字段 '{field_key}' = '{value}'")
     except Exception as e:
-        return f"设置字段值失败: {str(e)}"
+        return _err("设置字段值", e)
 
 
 @mcp.tool
@@ -1199,9 +1234,9 @@ def refresh_bom() -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         mech_conn.zwm_db.refresh_bom()
-        return "明细表刷新成功"
+        return _ok("明细表刷新成功")
     except Exception as e:
-        return f"刷新明细表失败: {str(e)}"
+        return _err("刷新明细表", e)
 
 
 # ==========================================
@@ -1223,11 +1258,11 @@ def open_mech_file(file_path: str = "") -> str:
         mech_conn.open_file(file_path)
         
         if file_path:
-            return f"成功打开机械模块文件: {file_path}"
+            return _ok(f"成功打开机械模块文件: {file_path}", file_path=file_path)
         else:
-            return "成功连接当前活动图纸"
+            return _ok("成功连接当前活动图纸")
     except Exception as e:
-        return f"打开文件失败: {str(e)}"
+        return _err("打开文件", e)
 
 
 @mcp.tool
@@ -1244,9 +1279,9 @@ def save_mech_data(flag: int = 33) -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         mech_conn.zwm_db.save(flag)
-        return f"机械模块数据保存成功 (flag={flag})"
+        return _ok(f"机械模块数据保存成功 (flag={flag})", flag=flag)
     except Exception as e:
-        return f"保存机械模块数据失败: {str(e)}"
+        return _err("保存机械模块数据", e)
 
 
 @mcp.tool
@@ -1259,93 +1294,10 @@ def close_mech() -> str:
     try:
         _, mech_conn = get_cad_connection()
         mech_conn.close()
-        return "机械模块连接已关闭"
+        return _ok("机械模块连接已关闭")
     except Exception as e:
-        return f"关闭机械模块失败: {str(e)}"
+        return _err("关闭机械模块", e)
 
-
-# ==========================================
-# 编辑操作工具
-# ==========================================
-
-@mcp.tool
-def edit_frame() -> str:
-    """
-    打开图框编辑对话框/模式
-    
-    返回: 操作结果信息
-    """
-    try:
-        _, mech_conn = get_cad_connection()
-        mech_conn.open_file("")
-        mech_conn.zwm_db.frame_edit()
-        return "图框编辑模式已启动"
-    except Exception as e:
-        return f"启动图框编辑失败: {str(e)}"
-
-
-@mcp.tool
-def edit_title() -> str:
-    """
-    打开标题栏编辑对话框/模式
-    
-    返回: 操作结果信息
-    """
-    try:
-        _, mech_conn = get_cad_connection()
-        mech_conn.open_file("")
-        mech_conn.zwm_db.title_edit()
-        return "标题栏编辑模式已启动"
-    except Exception as e:
-        return f"启动标题栏编辑失败: {str(e)}"
-
-
-@mcp.tool
-def edit_csl() -> str:
-    """
-    打开参数表编辑对话框/模式
-    
-    返回: 操作结果信息
-    """
-    try:
-        _, mech_conn = get_cad_connection()
-        mech_conn.open_file("")
-        mech_conn.zwm_db.csl_edit()
-        return "参数表编辑模式已启动"
-    except Exception as e:
-        return f"启动参数表编辑失败: {str(e)}"
-
-
-@mcp.tool
-def edit_fjl() -> str:
-    """
-    打开附加栏编辑对话框/模式
-    
-    返回: 操作结果信息
-    """
-    try:
-        _, mech_conn = get_cad_connection()
-        mech_conn.open_file("")
-        mech_conn.zwm_db.fjl_edit()
-        return "附加栏编辑模式已启动"
-    except Exception as e:
-        return f"启动附加栏编辑失败: {str(e)}"
-
-
-@mcp.tool
-def edit_total_bom() -> str:
-    """
-    打开汇总明细表编辑对话框/模式
-    
-    返回: 操作结果信息
-    """
-    try:
-        _, mech_conn = get_cad_connection()
-        mech_conn.open_file("")
-        mech_conn.zwm_db.total_bom_edit()
-        return "汇总明细表编辑模式已启动"
-    except Exception as e:
-        return f"启动汇总明细表编辑失败: {str(e)}"
 
 
 # ==========================================
@@ -1362,9 +1314,9 @@ def get_mech_version() -> str:
     try:
         _, mech_conn = get_cad_connection()
         version = mech_conn.zwm_app.get_version()
-        return f"ZWCAD Mechanical 版本: {version}"
+        return _ok("获取版本信息成功", version=version)
     except Exception as e:
-        return f"获取版本信息失败: {str(e)}"
+        return _err("获取版本信息", e)
 
 
 @mcp.tool
@@ -1377,9 +1329,9 @@ def get_cad_path() -> str:
     try:
         _, mech_conn = get_cad_connection()
         path = mech_conn.zwm_app.get_cad_path()
-        return f"CAD 安装路径: {path}"
+        return _ok("获取 CAD 路径成功", path=path)
     except Exception as e:
-        return f"获取 CAD 路径失败: {str(e)}"
+        return _err("获取 CAD 路径", e)
 
 
 @mcp.tool
@@ -1392,9 +1344,9 @@ def get_zwm_path() -> str:
     try:
         _, mech_conn = get_cad_connection()
         path = mech_conn.zwm_app.get_zwm_path()
-        return f"Mechanical 模块路径: {path}"
+        return _ok("获取 Mechanical 路径成功", path=path)
     except Exception as e:
-        return f"获取 Mechanical 路径失败: {str(e)}"
+        return _err("获取 Mechanical 路径", e)
 
 
 @mcp.tool
@@ -1407,9 +1359,9 @@ def get_style_path() -> str:
     try:
         _, mech_conn = get_cad_connection()
         path = mech_conn.zwm_app.get_style_path()
-        return f"样式文件路径: {path}"
+        return _ok("获取样式路径成功", path=path)
     except Exception as e:
-        return f"获取样式路径失败: {str(e)}"
+        return _err("获取样式路径", e)
 
 
 @mcp.tool
@@ -1422,27 +1374,29 @@ def get_mech_about() -> str:
     try:
         _, mech_conn = get_cad_connection()
         about = mech_conn.zwm_app.get_about()
-        return f"Mechanical 关于信息: {about}"
+        return _ok("获取关于信息成功", about=about)
     except Exception as e:
-        return f"获取关于信息失败: {str(e)}"
+        return _err("获取关于信息", e)
 
 
 @mcp.tool
 def send_mech_command(cmd: str) -> str:
     """
-    向 ZWCAD Mechanical 发送命令
-    
+    向 ZWCAD Mechanical 发送命令。
+    自动在命令末尾追加换行符以确保命令执行。
+
     参数:
     - cmd: 命令字符串
-    
+
     返回: 操作结果信息
     """
     try:
         _, mech_conn = get_cad_connection()
-        mech_conn.zwm_app.send_command(cmd)
-        return f"命令发送成功: {cmd}"
+        real_cmd = cmd if cmd.endswith("\n") else cmd + "\n"
+        mech_conn.zwm_app.send_command(real_cmd)
+        return _ok(f"命令发送成功: {cmd}", command=cmd)
     except Exception as e:
-        return f"发送命令失败: {str(e)}"
+        return _err("发送命令", e)
 
 
 @mcp.tool
@@ -1458,9 +1412,9 @@ def open_mech_doc(file_path: str) -> str:
     try:
         _, mech_conn = get_cad_connection()
         mech_conn.zwm_app.open_doc(file_path)
-        return f"成功打开文档: {file_path}"
+        return _ok(f"成功打开文档: {file_path}", file_path=file_path)
     except Exception as e:
-        return f"打开文档失败: {str(e)}"
+        return _err("打开文档", e)
 
 
 @mcp.tool
@@ -1476,9 +1430,9 @@ def new_mech_doc(file_path: str) -> str:
     try:
         _, mech_conn = get_cad_connection()
         mech_conn.zwm_app.new_doc(file_path)
-        return f"成功新建文档: {file_path}"
+        return _ok(f"成功新建文档: {file_path}", file_path=file_path)
     except Exception as e:
-        return f"新建文档失败: {str(e)}"
+        return _err("新建文档", e)
 
 
 @mcp.tool
@@ -1495,9 +1449,13 @@ def new_named_mech_doc(file_path: str, template: str) -> str:
     try:
         _, mech_conn = get_cad_connection()
         mech_conn.zwm_app.new_named_doc(file_path, template)
-        return f"成功新建命名文档: {file_path} (模板: {template})"
+        return _ok(
+            f"成功新建命名文档: {file_path} (模板: {template})",
+            file_path=file_path,
+            template=template,
+        )
     except Exception as e:
-        return f"新建命名文档失败: {str(e)}"
+        return _err("新建命名文档", e)
 
 
 # ==========================================
@@ -1520,11 +1478,11 @@ def get_balloon(text: str = "") -> str:
         balloon = mech_conn.zwm_db.get_balloon(text)
         
         if balloon:
-            return f"成功获取球标对象: {balloon}"
+            return _ok(f"成功获取球标对象: {balloon}")
         else:
-            return "未获取到球标对象"
+            return _ok("未获取到球标对象", found=False)
     except Exception as e:
-        return f"获取球标失败: {str(e)}"
+        return _err("获取球标", e)
 
 
 @mcp.tool
@@ -1541,9 +1499,9 @@ def cad_environment_init(std_name: str) -> str:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         mech_conn.zwm_db.cad_environment_init(std_name)
-        return f"CAD 环境初始化成功 (标准: {std_name})"
+        return _ok(f"CAD 环境初始化成功 (标准: {std_name})", standard=std_name)
     except Exception as e:
-        return f"CAD 环境初始化失败: {str(e)}"
+        return _err("CAD 环境初始化", e)
 
 
 @mcp.tool
@@ -1570,9 +1528,9 @@ def get_next_frame_name() -> str:
             if hasattr(frame, 'height'):
                 result['height'] = frame.height
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return f"获取下一个图框名称失败: {str(e)}"
+        return _err("获取下一个图框名称", e)
 
 
 @mcp.tool
@@ -1646,13 +1604,13 @@ def create_frame(
         # 2. 获取下一个图框名称并切换
         frame_obj, name = mech_conn.zwm_db.get_next_frm_name()
         if not name:
-            return "获取新图框名称失败"
+            return _ok("获取新图框名称失败", created=False)
             
         mech_conn.zwm_db.switch_frame(name)
         frame = mech_conn.zwm_db.get_frame()
         
         if not frame:
-            return "获取新图框对象失败"
+            return _ok("获取新图框对象失败", created=False)
             
         # 3. 设置属性 (参考无界面创建示例)
         fields = {
@@ -1678,28 +1636,33 @@ def create_frame(
         }
 
         # 将属性值写入图框对象
+        failed = []
         for key, val_str in fields.items():
             if key in ["width", "height", "have_dhl", "have_fjl", "have_btl", "have_csl", "have_ggl"]:
                 try:
                     setattr(frame, key, int(val_str))
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    failed.append({"key": key, "value": val_str, "error": str(e)})
             else:
                 try:
                     setattr(frame, key, val_str)
-                except Exception:
-                    pass
+                except Exception as e:
+                    failed.append({"key": key, "value": val_str, "error": str(e)})
         
         # 4. 构建图框
         mech_conn.zwm_db.build_frame(511)
         
-        return f"成功创建图框: {name} (标准:{std_name}, 图幅:{frame_size_name})"
+        return _ok(
+            f"成功创建图框: {name} (标准:{std_name}, 图幅:{frame_size_name})",
+            frame_name=name,
+            setattr_failures=failed,
+        )
     except Exception as e:
-        return f"创建图框失败: {str(e)}"
+        return _err("创建图框", e)
 
 
 # ==========================================
-# 扩展绘图工具（来自 zwcad25.tlb COM 接口）
+# 扩展绘图工具（来自COM 接口）
 # ==========================================
 
 @mcp.tool
@@ -1723,9 +1686,13 @@ def draw_arc(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         arc = zcad_conn.model.AddArc(center, radius, start_angle, end_angle)
         arc.Layer = layer
-        return f"成功绘制圆弧: 圆心({center_x},{center_y},{center_z}), 半径={radius}, 角度{start_angle:.4f}~{end_angle:.4f}，图层: {layer}"
+        return _ok(
+            f"成功绘制圆弧: 圆心({center_x},{center_y},{center_z}), 半径={radius}, 角度{start_angle:.4f}~{end_angle:.4f}，图层: {layer}",
+            handle=arc.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制圆弧", e)
+        return _err("绘制圆弧", e)
 
 
 @mcp.tool
@@ -1750,9 +1717,13 @@ def draw_ellipse(center_x: float, center_y: float, center_z: float,
         major_axis = APoint(major_axis_x, major_axis_y, major_axis_z)
         ellipse = zcad_conn.model.AddEllipse(center, major_axis, radius_ratio)
         ellipse.Layer = layer
-        return f"成功绘制椭圆: 圆心({center_x},{center_y},{center_z}), 半轴比={radius_ratio}，图层: {layer}"
+        return _ok(
+            f"成功绘制椭圆: 圆心({center_x},{center_y},{center_z}), 半轴比={radius_ratio}，图层: {layer}",
+            handle=ellipse.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制椭圆", e)
+        return _err("绘制椭圆", e)
 
 
 @mcp.tool
@@ -1782,9 +1753,13 @@ def draw_lwpolyline(vertices: list, layer: str = "0",
         pline.Layer = layer
         if closed:
             pline.Closed = True
-        return f"成功绘制轻量多段线: {len(flat)//2}个顶点, 闭合={closed}，图层: {layer}"
+        return _ok(
+            f"成功绘制轻量多段线: {len(flat)//2}个顶点, 闭合={closed}，图层: {layer}",
+            handle=pline.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制轻量多段线", e)
+        return _err("绘制轻量多段线", e)
 
 
 @mcp.tool
@@ -1813,9 +1788,13 @@ def draw_polyline(vertices: list, layer: str = "0",
         pline.Layer = layer
         if closed:
             pline.Closed = True
-        return f"成功绘制2D多段线: {len(flat)//3}个顶点, 闭合={closed}，图层: {layer}"
+        return _ok(
+            f"成功绘制2D多段线: {len(flat)//3}个顶点, 闭合={closed}，图层: {layer}",
+            handle=pline.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制2D多段线", e)
+        return _err("绘制2D多段线", e)
 
 
 @mcp.tool
@@ -1847,9 +1826,13 @@ def draw_spline(fit_points: list,
         end_tan = APoint(end_tangent_x, end_tangent_y, end_tangent_z)
         spline = zcad_conn.model.AddSpline(points, start_tan, end_tan)
         spline.Layer = layer
-        return f"成功绘制样条曲线: {len(flat)//3}个拟合点，图层: {layer}"
+        return _ok(
+            f"成功绘制样条曲线: {len(flat)//3}个拟合点，图层: {layer}",
+            handle=spline.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制样条曲线", e)
+        return _err("绘制样条曲线", e)
 
 
 @mcp.tool
@@ -1869,9 +1852,9 @@ def add_point(x: float, y: float, z: float,
         point = APoint(x, y, z)
         pt = zcad_conn.model.AddPoint(point)
         pt.Layer = layer
-        return f"成功添加点: ({x},{y},{z})，图层: {layer}"
+        return _ok(f"成功添加点: ({x},{y},{z})，图层: {layer}", handle=pt.Handle, layer=layer)
     except Exception as e:
-        return _format_error("添加点", e)
+        return _err("添加点", e)
 
 
 @mcp.tool
@@ -1898,9 +1881,13 @@ def add_mtext(text: str, x: float, y: float, z: float,
         mtext.Height = height
         mtext.Rotation = rotation
         mtext.Layer = layer
-        return f"成功添加多行文本: '{text[:50]}' at ({x},{y},{z})，字高: {height}，图层: {layer}"
+        return _ok(
+            f"成功添加多行文本: '{text[:50]}' at ({x},{y},{z})，字高: {height}，图层: {layer}",
+            handle=mtext.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("添加多行文本", e)
+        return _err("添加多行文本", e)
 
 
 @mcp.tool
@@ -1925,9 +1912,13 @@ def insert_block(block_name: str, x: float, y: float, z: float,
         point = APoint(x, y, z)
         block_ref = zcad_conn.model.InsertBlock(point, block_name, x_scale, y_scale, z_scale, rotation)
         block_ref.Layer = layer
-        return f"成功插入图块: '{block_name}' at ({x},{y},{z})，比例({x_scale},{y_scale},{z_scale})，图层: {layer}"
+        return _ok(
+            f"成功插入图块: '{block_name}' at ({x},{y},{z})，比例({x_scale},{y_scale},{z_scale})，图层: {layer}",
+            handle=block_ref.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("插入图块", e)
+        return _err("插入图块", e)
 
 
 # ==========================================
@@ -1962,9 +1953,14 @@ def add_dim_aligned(x1: float, y1: float, z1: float,
         if text_override:
             dim.TextOverride = text_override
         measurement = dim.Measurement
-        return f"成功添加对齐标注: ({x1},{y1})-({x2},{y2}), 测量值={measurement:.4f}，图层: {layer}"
+        return _ok(
+            f"成功添加对齐标注: ({x1},{y1})-({x2},{y2}), 测量值={measurement:.4f}，图层: {layer}",
+            handle=dim.Handle,
+            layer=layer,
+            measurement=measurement,
+        )
     except Exception as e:
-        return _format_error("添加对齐标注", e)
+        return _err("添加对齐标注", e)
 
 
 @mcp.tool
@@ -1997,9 +1993,14 @@ def add_dim_rotated(x1: float, y1: float, z1: float,
         if text_override:
             dim.TextOverride = text_override
         measurement = dim.Measurement
-        return f"成功添加旋转标注: 角度={rotation_angle:.4f}, 测量值={measurement:.4f}，图层: {layer}"
+        return _ok(
+            f"成功添加旋转标注: 角度={rotation_angle:.4f}, 测量值={measurement:.4f}，图层: {layer}",
+            handle=dim.Handle,
+            layer=layer,
+            measurement=measurement,
+        )
     except Exception as e:
-        return _format_error("添加旋转标注", e)
+        return _err("添加旋转标注", e)
 
 
 @mcp.tool
@@ -2029,9 +2030,14 @@ def add_dim_diametric(chord_x: float, chord_y: float, chord_z: float,
         if text_override:
             dim.TextOverride = text_override
         measurement = dim.Measurement
-        return f"成功添加直径标注: 测量值={measurement:.4f}，图层: {layer}"
+        return _ok(
+            f"成功添加直径标注: 测量值={measurement:.4f}，图层: {layer}",
+            handle=dim.Handle,
+            layer=layer,
+            measurement=measurement,
+        )
     except Exception as e:
-        return _format_error("添加直径标注", e)
+        return _err("添加直径标注", e)
 
 
 @mcp.tool
@@ -2061,9 +2067,14 @@ def add_dim_radial(center_x: float, center_y: float, center_z: float,
         if text_override:
             dim.TextOverride = text_override
         measurement = dim.Measurement
-        return f"成功添加半径标注: 测量值={measurement:.4f}，图层: {layer}"
+        return _ok(
+            f"成功添加半径标注: 测量值={measurement:.4f}，图层: {layer}",
+            handle=dim.Handle,
+            layer=layer,
+            measurement=measurement,
+        )
     except Exception as e:
-        return _format_error("添加半径标注", e)
+        return _err("添加半径标注", e)
 
 
 @mcp.tool
@@ -2097,9 +2108,14 @@ def add_dim_angular(vertex_x: float, vertex_y: float, vertex_z: float,
         if text_override:
             dim.TextOverride = text_override
         measurement = dim.Measurement
-        return f"成功添加角度标注: 测量值={measurement:.4f}，图层: {layer}"
+        return _ok(
+            f"成功添加角度标注: 测量值={measurement:.4f}，图层: {layer}",
+            handle=dim.Handle,
+            layer=layer,
+            measurement=measurement,
+        )
     except Exception as e:
-        return _format_error("添加角度标注", e)
+        return _err("添加角度标注", e)
 
 
 @mcp.tool
@@ -2129,9 +2145,14 @@ def add_dim_ordinate(def_x: float, def_y: float, def_z: float,
         if text_override:
             dim.TextOverride = text_override
         axis = "X" if use_x_axis else "Y"
-        return f"成功添加坐标标注: {axis}轴，图层: {layer}"
+        return _ok(
+            f"成功添加坐标标注: {axis}轴，图层: {layer}",
+            handle=dim.Handle,
+            layer=layer,
+            axis=axis,
+        )
     except Exception as e:
-        return _format_error("添加坐标标注", e)
+        return _err("添加坐标标注", e)
 
 
 # ==========================================
@@ -2140,7 +2161,8 @@ def add_dim_ordinate(def_x: float, def_y: float, def_z: float,
 
 @mcp.tool
 def copy_object(object_type: str, property_name: str, property_value: str,
-                to_x: float, to_y: float, to_z: float) -> str:
+                to_x: float, to_y: float, to_z: float,
+                handle: str = None) -> str:
     """
     复制对象到指定位置（通过偏移移动）
 
@@ -2149,20 +2171,24 @@ def copy_object(object_type: str, property_name: str, property_value: str,
     - property_name: 用于定位的属性名（如 "Layer"）
     - property_value: 属性值
     - to_x, to_y, to_z: 复制到的目标位置坐标
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         # 获取对象位置
         if hasattr(obj, 'InsertionPoint'):
@@ -2172,19 +2198,24 @@ def copy_object(object_type: str, property_name: str, property_value: str,
         elif hasattr(obj, 'StartPoint'):
             from_pt = obj.StartPoint
         else:
-            return "无法确定对象位置，不支持该类型对象的复制"
+            return _ok("无法确定对象位置，不支持该类型对象的复制", found=False)
 
         to_pt = APoint(to_x, to_y, to_z)
         new_obj = obj.Copy()
         new_obj.Move(from_pt, to_pt)
-        return f"成功复制对象到 ({to_x},{to_y},{to_z})"
+        return _ok(
+            f"成功复制对象到 ({to_x},{to_y},{to_z})",
+            handle=new_obj.Handle,
+            layer=getattr(new_obj, "Layer", None),
+        )
     except Exception as e:
-        return _format_error("复制对象", e)
+        return _err("复制对象", e)
 
 
 @mcp.tool
 def move_object(object_type: str, property_name: str, property_value: str,
-                to_x: float, to_y: float, to_z: float) -> str:
+                to_x: float, to_y: float, to_z: float,
+                handle: str = None) -> str:
     """
     移动对象到指定位置
 
@@ -2193,20 +2224,24 @@ def move_object(object_type: str, property_name: str, property_value: str,
     - property_name: 用于定位的属性名（如 "Layer"）
     - property_value: 属性值
     - to_x, to_y, to_z: 目标位置坐标
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         if hasattr(obj, 'InsertionPoint'):
             from_pt = obj.InsertionPoint
@@ -2215,19 +2250,24 @@ def move_object(object_type: str, property_name: str, property_value: str,
         elif hasattr(obj, 'StartPoint'):
             from_pt = obj.StartPoint
         else:
-            return "无法确定对象位置"
+            return _ok("无法确定对象位置", found=False)
 
         to_pt = APoint(to_x, to_y, to_z)
         obj.Move(from_pt, to_pt)
-        return f"成功移动对象到 ({to_x},{to_y},{to_z})"
+        return _ok(
+            f"成功移动对象到 ({to_x},{to_y},{to_z})",
+            handle=obj.Handle,
+            layer=getattr(obj, "Layer", None),
+        )
     except Exception as e:
-        return _format_error("移动对象", e)
+        return _err("移动对象", e)
 
 
 @mcp.tool
 def rotate_object(object_type: str, property_name: str, property_value: str,
                   base_x: float, base_y: float, base_z: float,
-                  rotation_angle: float) -> str:
+                  rotation_angle: float,
+                  handle: str = None) -> str:
     """
     旋转对象
 
@@ -2237,33 +2277,42 @@ def rotate_object(object_type: str, property_name: str, property_value: str,
     - property_value: 属性值
     - base_x, base_y, base_z: 旋转基点坐标
     - rotation_angle: 旋转角度（弧度）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         base_pt = APoint(base_x, base_y, base_z)
         obj.Rotate(base_pt, rotation_angle)
-        return f"成功旋转对象: 基点({base_x},{base_y},{base_z}), 角度={rotation_angle:.4f}弧度"
+        return _ok(
+            f"成功旋转对象: 基点({base_x},{base_y},{base_z}), 角度={rotation_angle:.4f}弧度",
+            handle=obj.Handle,
+            layer=getattr(obj, "Layer", None),
+        )
     except Exception as e:
-        return _format_error("旋转对象", e)
+        return _err("旋转对象", e)
 
 
 @mcp.tool
 def mirror_object(object_type: str, property_name: str, property_value: str,
                   x1: float, y1: float, z1: float,
                   x2: float, y2: float, z2: float,
-                  delete_original: bool = False) -> str:
+                  delete_original: bool = False,
+                  handle: str = None) -> str:
     """
     镜像对象
 
@@ -2274,20 +2323,24 @@ def mirror_object(object_type: str, property_name: str, property_value: str,
     - x1,y1,z1: 镜像轴第一点
     - x2,y2,z2: 镜像轴第二点
     - delete_original: 是否删除原对象（可选，默认False保留原对象）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         p1 = APoint(x1, y1, z1)
         p2 = APoint(x2, y2, z2)
@@ -2295,15 +2348,20 @@ def mirror_object(object_type: str, property_name: str, property_value: str,
         if delete_original:
             obj.Delete()
         action = "并删除原对象" if delete_original else "保留原对象"
-        return f"成功镜像对象{action}: 轴({x1},{y1})-({x2},{y2})"
+        return _ok(
+            f"成功镜像对象{action}: 轴({x1},{y1})-({x2},{y2})",
+            handle=mirrored.Handle,
+            layer=getattr(mirrored, "Layer", None),
+        )
     except Exception as e:
-        return _format_error("镜像对象", e)
+        return _err("镜像对象", e)
 
 
 @mcp.tool
 def scale_object(object_type: str, property_name: str, property_value: str,
                  base_x: float, base_y: float, base_z: float,
-                 scale_factor: float) -> str:
+                 scale_factor: float,
+                 handle: str = None) -> str:
     """
     缩放对象
 
@@ -2313,30 +2371,39 @@ def scale_object(object_type: str, property_name: str, property_value: str,
     - property_value: 属性值
     - base_x, base_y, base_z: 缩放基点坐标
     - scale_factor: 缩放比例因子
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         base_pt = APoint(base_x, base_y, base_z)
         obj.ScaleEntity(base_pt, scale_factor)
-        return f"成功缩放对象: 基点({base_x},{base_y},{base_z}), 比例={scale_factor}"
+        return _ok(
+            f"成功缩放对象: 基点({base_x},{base_y},{base_z}), 比例={scale_factor}",
+            handle=obj.Handle,
+            layer=getattr(obj, "Layer", None),
+        )
     except Exception as e:
-        return _format_error("缩放对象", e)
+        return _err("缩放对象", e)
 
 
 @mcp.tool
-def delete_object(object_type: str, property_name: str, property_value: str) -> str:
+def delete_object(object_type: str, property_name: str, property_value: str,
+                  handle: str = None) -> str:
     """
     删除对象
 
@@ -2344,31 +2411,42 @@ def delete_object(object_type: str, property_name: str, property_value: str) -> 
     - object_type: 对象类型（如 "Line", "Circle" 等）
     - property_name: 用于定位的属性名（如 "Layer"）
     - property_value: 属性值
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
+        h = obj.Handle
+        lyr = getattr(obj, "Layer", None)
         obj.Delete()
-        return f"成功删除对象: {object_type}.{property_name}={property_value}"
+        return _ok(
+            f"成功删除对象: {object_type}.{property_name}={property_value}",
+            handle=h,
+            layer=lyr,
+        )
     except Exception as e:
-        return _format_error("删除对象", e)
+        return _err("删除对象", e)
 
 
 @mcp.tool
 def array_polar(object_type: str, property_name: str, property_value: str,
                 center_x: float, center_y: float, center_z: float,
-                number_of_objects: int, angle_to_fill: float) -> str:
+                number_of_objects: int, angle_to_fill: float,
+                handle: str = None) -> str:
     """
     极坐标阵列对象
 
@@ -2379,32 +2457,41 @@ def array_polar(object_type: str, property_name: str, property_value: str,
     - center_x, center_y, center_z: 阵列中心点坐标
     - number_of_objects: 阵列数量（含原对象）
     - angle_to_fill: 填充角度（弧度，正=逆时针）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         center = APoint(center_x, center_y, center_z)
-        result = obj.ArrayPolar(number_of_objects, angle_to_fill, center)
-        return f"成功极坐标阵列: 数量={number_of_objects}, 填充角度={angle_to_fill:.4f}弧度"
+        _ = obj.ArrayPolar(number_of_objects, angle_to_fill, center)
+        return _ok(
+            f"成功极坐标阵列: 数量={number_of_objects}, 填充角度={angle_to_fill:.4f}弧度",
+            handle=getattr(obj, "Handle", None),
+            layer=getattr(obj, "Layer", None),
+        )
     except Exception as e:
-        return _format_error("极坐标阵列", e)
+        return _err("极坐标阵列", e)
 
 
 @mcp.tool
 def array_rectangular(object_type: str, property_name: str, property_value: str,
                       num_rows: int, num_cols: int, num_levels: int,
-                      row_dist: float, col_dist: float, level_dist: float) -> str:
+                      row_dist: float, col_dist: float, level_dist: float,
+                      handle: str = None) -> str:
     """
     矩形阵列对象
 
@@ -2418,30 +2505,40 @@ def array_rectangular(object_type: str, property_name: str, property_value: str,
     - row_dist: 行间距
     - col_dist: 列间距
     - level_dist: 层间距
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象: {object_type}.{property_name}={property_value}"
+            return _ok(
+                "未找到符合条件的对象",
+                found=False,
+                object_type=object_type,
+                property_name=property_name,
+                property_value=property_value,
+            )
 
         result = obj.ArrayRectangular(num_rows, num_cols, num_levels,
                                        row_dist, col_dist, level_dist)
-        return f"成功矩形阵列: {num_rows}行×{num_cols}列×{num_levels}层"
+        return _ok(
+            f"成功矩形阵列: {num_rows}行×{num_cols}列×{num_levels}层",
+            handle=getattr(obj, "Handle", None),
+            layer=getattr(obj, "Layer", None),
+            array_result=repr(result) if result is not None else None,
+        )
     except Exception as e:
-        return _format_error("矩形阵列", e)
+        return _err("矩形阵列", e)
 
 
 @mcp.tool
-def get_object_properties(object_type: str, property_name: str, property_value: str) -> str:
+def get_object_properties(object_type: str, property_name: str, property_value: str,
+                          handle: str = None) -> str:
     """
     获取对象的详细属性信息
 
@@ -2449,20 +2546,18 @@ def get_object_properties(object_type: str, property_name: str, property_value: 
     - object_type: 对象类型（如 "Line", "Circle", "Arc" 等）
     - property_name: 用于定位的属性名（如 "Layer"）
     - property_value: 属性值
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON 格式的对象属性信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def predicate(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == property_value
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return json.dumps({"found": False}, ensure_ascii=False)
+            return _ok("未找到符合条件的对象", found=False)
 
         info = {"found": True, "object_name": obj.ObjectName}
 
@@ -2503,9 +2598,9 @@ def get_object_properties(object_type: str, property_name: str, property_value: 
         except Exception:
             pass
 
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取对象属性成功", data=info)
     except Exception as e:
-        return f"获取对象属性失败: {str(e)}"
+        return _err("获取对象属性", e)
 
 
 # ==========================================
@@ -2538,9 +2633,9 @@ def list_layers() -> str:
                 except Exception:
                     pass
             layers.append(info)
-        return json.dumps(layers, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=layers)
     except Exception as e:
-        return f"获取图层列表失败: {str(e)}"
+        return _err("获取图层列表", e)
 
 
 @mcp.tool
@@ -2565,9 +2660,14 @@ def add_layer(name: str, color: int = 7,
         layer.Linetype = linetype
         if description and hasattr(layer, 'Description'):
             layer.Description = description
-        return f"成功创建图层: '{name}', 颜色={color}, 线型={linetype}"
+        return _ok(
+            f"成功创建图层: '{name}', 颜色={color}, 线型={linetype}",
+            name=name,
+            handle=getattr(layer, "Handle", None),
+            layer=name,
+        )
     except Exception as e:
-        return _format_error("创建图层", e)
+        return _err("创建图层", e)
 
 
 @mcp.tool
@@ -2584,9 +2684,9 @@ def set_active_layer(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         layer = zcad_conn.doc.Layers.Item(name)
         zcad_conn.doc.ActiveLayer = layer
-        return f"成功设置活动图层: '{name}'"
+        return _ok(f"成功设置活动图层: '{name}'", layer=name, handle=getattr(layer, "Handle", None))
     except Exception as e:
-        return _format_error("设置活动图层", e)
+        return _err("设置活动图层", e)
 
 
 @mcp.tool
@@ -2629,10 +2729,10 @@ def set_layer_properties(name: str,
             layer.Linetype = linetype
             updated.append(f"linetype={linetype}")
         if updated:
-            return f"成功更新图层 '{name}': {', '.join(updated)}"
-        return "未提供任何要更新的属性"
+            return _ok(f"成功更新图层 '{name}': {', '.join(updated)}", name=name, handle=getattr(layer, "Handle", None))
+        return _ok("未提供任何要更新的属性", updated=False)
     except Exception as e:
-        return _format_error("设置图层属性", e)
+        return _err("设置图层属性", e)
 
 
 # ==========================================
@@ -2657,9 +2757,9 @@ def list_linetypes() -> str:
                 except Exception:
                     pass
             linetypes.append(info)
-        return json.dumps(linetypes, ensure_ascii=False, indent=2)
+        return _ok("获取线型列表成功", data=linetypes)
     except Exception as e:
-        return f"获取线型列表失败: {str(e)}"
+        return _err("获取线型列表", e)
 
 
 @mcp.tool
@@ -2676,9 +2776,9 @@ def load_linetype(name: str, filename: str = "acad.lin") -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Linetypes.Load(name, filename)
-        return f"成功加载线型: '{name}' (文件: {filename})"
+        return _ok(f"成功加载线型: '{name}' (文件: {filename})", name=name, filename=filename)
     except Exception as e:
-        return _format_error("加载线型", e)
+        return _err("加载线型", e)
 
 
 @mcp.tool
@@ -2700,9 +2800,9 @@ def list_textstyles() -> str:
                 "oblique_angle": ts.ObliqueAngle if hasattr(ts, 'ObliqueAngle') else 0
             }
             styles.append(info)
-        return json.dumps(styles, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=styles)
     except Exception as e:
-        return f"获取文字样式列表失败: {str(e)}"
+        return _err("获取文字样式列表", e)
 
 
 @mcp.tool
@@ -2729,9 +2829,9 @@ def add_textstyle(name: str, font_file: str = "txt.shx",
             ts.BigFontFile = big_font_file
         if height > 0:
             ts.Height = height
-        return f"成功创建文字样式: '{name}', 字体={font_file}, 大字体={big_font_file}"
+        return _ok(f"成功创建文字样式: '{name}', 字体={font_file}, 大字体={big_font_file}", name=name)
     except Exception as e:
-        return _format_error("创建文字样式", e)
+        return _err("创建文字样式", e)
 
 
 @mcp.tool
@@ -2746,9 +2846,9 @@ def list_dimstyles() -> str:
         styles = []
         for ds in zcad_conn.doc.DimStyles:
             styles.append({"name": ds.Name})
-        return json.dumps(styles, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=styles)
     except Exception as e:
-        return f"获取标注样式列表失败: {str(e)}"
+        return _err("获取标注样式列表", e)
 
 
 @mcp.tool
@@ -2764,9 +2864,9 @@ def add_dimstyle(name: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.DimStyles.Add(name)
-        return f"成功创建标注样式: '{name}'"
+        return _ok(f"成功创建标注样式: '{name}'", name=name)
     except Exception as e:
-        return _format_error("创建标注样式", e)
+        return _err("创建标注样式", e)
 
 
 # ==========================================
@@ -2797,9 +2897,9 @@ def list_blocks() -> str:
                 except Exception:
                     pass
             blocks.append(info)
-        return json.dumps(blocks, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=blocks)
     except Exception as e:
-        return f"获取图块列表失败: {str(e)}"
+        return _err("获取图块列表", e)
 
 
 @mcp.tool
@@ -2837,13 +2937,14 @@ def get_block_info(name: str) -> str:
                 info['path'] = blk.Path
             except Exception:
                 pass
-        return json.dumps(info, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return f"获取图块信息失败: {str(e)}"
+        return _err("获取图块信息", e)
 
 
 @mcp.tool
-def get_block_attributes(block_name: str, property_name: str, property_value: str) -> str:
+def get_block_attributes(block_name: str, property_name: str, property_value: str,
+                         handle: str = None) -> str:
     """
     获取图块引用的属性值
 
@@ -2851,6 +2952,7 @@ def get_block_attributes(block_name: str, property_name: str, property_value: st
     - block_name: 图块类型名称
     - property_name: 用于定位图块引用的属性名（如 "Layer"）
     - property_value: 属性值
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON 格式的属性列表
     """
@@ -2863,9 +2965,10 @@ def get_block_attributes(block_name: str, property_name: str, property_value: st
                     return str(getattr(obj, property_name)) == property_value
             return False
 
-        obj = zcad_conn.find_one("BlockReference", predicate=predicate)
+        obj = _find_entity(zcad_conn, object_type="BlockReference", handle=handle,
+                           predicate=predicate if not handle else None)
         if not obj:
-            return f"未找到符合条件的图块引用: {block_name}"
+            return _ok("未找到符合条件的图块引用", found=False, block_name=block_name)
 
         attrs = obj.GetAttributes()
         result = []
@@ -2874,9 +2977,9 @@ def get_block_attributes(block_name: str, property_name: str, property_value: st
                 "tag": attr.TagString if hasattr(attr, 'TagString') else "",
                 "text": attr.TextString if hasattr(attr, 'TextString') else "",
             })
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return f"获取图块属性失败: {str(e)}"
+        return _err("获取图块属性", e)
 
 
 # ==========================================
@@ -2893,9 +2996,9 @@ def zoom_extents() -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.app.ZoomExtents()
-        return "成功执行 Zoom Extents"
+        return _ok("成功执行 Zoom Extents")
     except Exception as e:
-        return _format_error("Zoom Extents", e)
+        return _err("Zoom Extents", e)
 
 
 @mcp.tool
@@ -2908,9 +3011,9 @@ def zoom_all() -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.app.ZoomAll()
-        return "成功执行 Zoom All"
+        return _ok("成功执行 Zoom All")
     except Exception as e:
-        return _format_error("Zoom All", e)
+        return _err("Zoom All", e)
 
 
 @mcp.tool
@@ -2929,9 +3032,9 @@ def zoom_window(x1: float, y1: float, x2: float, y2: float) -> str:
         lower_left = APoint(x1, y1, 0)
         upper_right = APoint(x2, y2, 0)
         zcad_conn.app.ZoomWindow(lower_left, upper_right)
-        return f"成功执行 Zoom Window: ({x1},{y1})-({x2},{y2})"
+        return _ok(f"成功执行 Zoom Window: ({x1},{y1})-({x2},{y2})")
     except Exception as e:
-        return _format_error("Zoom Window", e)
+        return _err("Zoom Window", e)
 
 
 @mcp.tool
@@ -2949,9 +3052,9 @@ def zoom_center(center_x: float, center_y: float, magnify: float = 1.0) -> str:
         zcad_conn, _ = get_cad_connection()
         center = APoint(center_x, center_y, 0)
         zcad_conn.app.ZoomCenter(center, magnify)
-        return f"成功执行 Zoom Center: ({center_x},{center_y}), 倍数={magnify}"
+        return _ok(f"成功执行 Zoom Center: ({center_x},{center_y}), 倍数={magnify}")
     except Exception as e:
-        return _format_error("Zoom Center", e)
+        return _err("Zoom Center", e)
 
 
 @mcp.tool
@@ -2967,9 +3070,9 @@ def get_variable(name: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         value = zcad_conn.doc.GetVariable(name)
-        return f"系统变量 '{name}' = {value}"
+        return _ok("获取成功", name=name, value=value)
     except Exception as e:
-        return f"获取系统变量失败: {str(e)}"
+        return _err("获取系统变量", e)
 
 
 @mcp.tool
@@ -2986,15 +3089,16 @@ def set_variable(name: str, value) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.SetVariable(name, value)
-        return f"成功设置系统变量 '{name}' = {value}"
+        return _ok(f"成功设置系统变量 '{name}' = {value}")
     except Exception as e:
-        return _format_error("设置系统变量", e)
+        return _err("设置系统变量", e)
 
 
 @mcp.tool
 def send_command(command: str) -> str:
     """
-    向ZWCAD发送命令行命令（SendCommand）
+    向ZWCAD发送命令行命令（SendCommand）。
+    自动在命令末尾追加换行符以确保命令执行。
 
     参数:
     - command: 命令字符串（如 "._LINE 0,0 100,100 "）
@@ -3003,10 +3107,11 @@ def send_command(command: str) -> str:
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        zcad_conn.doc.SendCommand(command)
-        return f"命令已发送: {command}"
+        cmd = command if command.endswith("\n") else command + "\n"
+        zcad_conn.doc.SendCommand(cmd)
+        return _ok(f"命令已发送: {command}", command=command)
     except Exception as e:
-        return _format_error("发送命令", e)
+        return _err("发送命令", e)
 
 
 @mcp.tool
@@ -3031,9 +3136,9 @@ def get_application_info() -> str:
             info['window_state'] = app.WindowState
         if hasattr(app, 'Caption'):
             info['caption'] = app.Caption
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return f"获取应用程序信息失败: {str(e)}"
+        return _err("获取应用程序信息", e)
 
 
 @mcp.tool
@@ -3054,9 +3159,9 @@ def plot_to_file(plot_file: str, plot_config: str = "") -> str:
             plot.PlotToFile(plot_file, plot_config)
         else:
             plot.PlotToFile(plot_file)
-        return f"成功打印到文件: {plot_file}"
+        return _ok(f"成功打印到文件: {plot_file}")
     except Exception as e:
-        return _format_error("打印到文件", e)
+        return _err("打印到文件", e)
 
 
 @mcp.tool
@@ -3072,9 +3177,9 @@ def regen_viewport(which: int = 0) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Regen(which)
-        return f"成功重生成视口 (which={which})"
+        return _ok(f"成功重生成视口 (which={which})")
     except Exception as e:
-        return _format_error("重生成视口", e)
+        return _err("重生成视口", e)
 
 
 @mcp.tool
@@ -3087,9 +3192,9 @@ def purge_all() -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.PurgeAll()
-        return "成功清除所有未使用的命名对象"
+        return _ok("成功清除所有未使用的命名对象")
     except Exception as e:
-        return _format_error("清除命名对象", e)
+        return _err("清除命名对象", e)
 
 
 @mcp.tool
@@ -3106,9 +3211,9 @@ def set_active_textstyle(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         ts = zcad_conn.doc.TextStyles.Item(name)
         zcad_conn.doc.ActiveTextStyle = ts
-        return f"成功设置活动文字样式: '{name}'"
+        return _ok(f"成功设置活动文字样式: '{name}'")
     except Exception as e:
-        return _format_error("设置活动文字样式", e)
+        return _err("设置活动文字样式", e)
 
 
 @mcp.tool
@@ -3125,9 +3230,9 @@ def set_active_dimstyle(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         ds = zcad_conn.doc.DimStyles.Item(name)
         zcad_conn.doc.ActiveDimStyle = ds
-        return f"成功设置活动标注样式: '{name}'"
+        return _ok(f"成功设置活动标注样式: '{name}'")
     except Exception as e:
-        return _format_error("设置活动标注样式", e)
+        return _err("设置活动标注样式", e)
 
 
 @mcp.tool
@@ -3144,9 +3249,9 @@ def set_active_linetype(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         lt = zcad_conn.doc.Linetypes.Item(name)
         zcad_conn.doc.ActiveLinetype = lt
-        return f"成功设置活动线型: '{name}'"
+        return _ok(f"成功设置活动线型: '{name}'")
     except Exception as e:
-        return _format_error("设置活动线型", e)
+        return _err("设置活动线型", e)
 
 
 @mcp.tool
@@ -3159,9 +3264,9 @@ def undo_mark_start() -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.StartUndoMark()
-        return "撤销标记已开始"
+        return _ok("撤销标记已开始")
     except Exception as e:
-        return _format_error("开始撤销标记", e)
+        return _err("开始撤销标记", e)
 
 
 @mcp.tool
@@ -3174,9 +3279,9 @@ def undo_mark_end() -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.EndUndoMark()
-        return "撤销标记已结束"
+        return _ok("撤销标记已结束")
     except Exception as e:
-        return _format_error("结束撤销标记", e)
+        return _err("结束撤销标记", e)
 
 
 @mcp.tool
@@ -3220,9 +3325,13 @@ def add_hatch(pattern_type: int, pattern_name: str,
                 hatch.AppendOuterLoop(obj_array)
                 hatch.Evaluate()
 
-        return f"成功添加填充: 图案='{pattern_name}', 类型={pattern_type}, 比例={pattern_scale}"
+        return _ok(
+            f"成功添加填充: 图案='{pattern_name}', 类型={pattern_type}, 比例={pattern_scale}",
+            handle=hatch.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("添加填充", e)
+        return _err("添加填充", e)
 
 
 @mcp.tool
@@ -3249,9 +3358,13 @@ def add_leader(points: list, annotation_type: int = 0,
         coords = aDouble(*flat)
         leader = zcad_conn.model.AddLeader(coords, None, annotation_type)
         leader.Layer = layer
-        return f"成功添加引线: {len(flat)//3}个点, 注释类型={annotation_type}，图层: {layer}"
+        return _ok(
+            f"成功添加引线: {len(flat)//3}个点, 注释类型={annotation_type}，图层: {layer}",
+            handle=leader.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("添加引线", e)
+        return _err("添加引线", e)
 
 
 @mcp.tool
@@ -3275,9 +3388,13 @@ def add_tolerance(text: str, x: float, y: float, z: float,
         direction = APoint(dir_x, dir_y, dir_z)
         tol = zcad_conn.model.AddTolerance(text, point, direction)
         tol.Layer = layer
-        return f"成功添加形位公差: '{text}' at ({x},{y},{z})，图层: {layer}"
+        return _ok(
+            f"成功添加形位公差: '{text}' at ({x},{y},{z})，图层: {layer}",
+            handle=tol.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("添加形位公差", e)
+        return _err("添加形位公差", e)
 
 
 @mcp.tool
@@ -3303,9 +3420,13 @@ def add_table(x: float, y: float, z: float,
         point = APoint(x, y, z)
         table = zcad_conn.model.AddTable(point, rows, cols, row_height, col_width)
         table.Layer = layer
-        return f"成功添加表格: {rows}行×{cols}列 at ({x},{y},{z})，图层: {layer}"
+        return _ok(
+            f"成功添加表格: {rows}行×{cols}列 at ({x},{y},{z})，图层: {layer}",
+            handle=table.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("添加表格", e)
+        return _err("添加表格", e)
 
 
 @mcp.tool
@@ -3330,9 +3451,9 @@ def translate_coordinates(x: float, y: float, z: float,
             point, from_system, to_system, displacement
         )
         coords = list(result)
-        return json.dumps({"x": coords[0], "y": coords[1], "z": coords[2] if len(coords) > 2 else 0}, indent=2)
+        return _ok("获取成功", data={"x": coords[0], "y": coords[1], "z": coords[2] if len(coords) > 2 else 0})
     except Exception as e:
-        return _format_error("坐标转换", e)
+        return _err("坐标转换", e)
 
 
 @mcp.tool
@@ -3363,9 +3484,9 @@ def export_drawing(filename: str, extension: str = "DWG") -> str:
             sel.Delete()
         except Exception:
             pass
-        return f"成功导出: {filename} (格式: {extension})"
+        return _ok(f"成功导出: {filename} (格式: {extension})")
     except Exception as e:
-        return _format_error("导出文档", e)
+        return _err("导出文档", e)
 
 
 @mcp.tool
@@ -3385,9 +3506,9 @@ def import_file(filename: str, x: float = 0, y: float = 0, z: float = 0,
         zcad_conn, _ = get_cad_connection()
         point = APoint(x, y, z)
         zcad_conn.doc.Import(filename, point, scale_factor)
-        return f"成功导入文件: {filename} at ({x},{y},{z}), 比例={scale_factor}"
+        return _ok(f"成功导入文件: {filename} at ({x},{y},{z}), 比例={scale_factor}")
     except Exception as e:
-        return _format_error("导入文件", e)
+        return _err("导入文件", e)
 
 
 # ==========================================
@@ -3419,9 +3540,9 @@ def draw_3d_face(x1: float, y1: float, z1: float,
         p4 = APoint(x4, y4, z4)
         face = zcad_conn.model.Add3DFace(p1, p2, p3, p4)
         face.Layer = layer
-        return f"成功绘制3D面：图层: {layer}"
+        return _ok(f"成功绘制3D面：图层: {layer}", handle=face.Handle, layer=layer)
     except Exception as e:
-        return _format_error("绘制3D面", e)
+        return _err("绘制3D面", e)
 
 
 @mcp.tool
@@ -3445,9 +3566,13 @@ def draw_box(origin_x: float, origin_y: float, origin_z: float,
         origin = APoint(origin_x, origin_y, origin_z)
         box = zcad_conn.model.AddBox(origin, length, width, height)
         box.Layer = layer
-        return f"成功绘制长方体: ({origin_x},{origin_y},{origin_z}), {length}×{width}×{height}"
+        return _ok(
+            f"成功绘制长方体: ({origin_x},{origin_y},{origin_z}), {length}×{width}×{height}",
+            handle=box.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制长方体", e)
+        return _err("绘制长方体", e)
 
 
 @mcp.tool
@@ -3470,9 +3595,13 @@ def draw_cylinder(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         cyl = zcad_conn.model.AddCylinder(center, radius, height)
         cyl.Layer = layer
-        return f"成功绘制圆柱体: 圆心({center_x},{center_y},{center_z}), r={radius}, h={height}"
+        return _ok(
+            f"成功绘制圆柱体: 圆心({center_x},{center_y},{center_z}), r={radius}, h={height}",
+            handle=cyl.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制圆柱体", e)
+        return _err("绘制圆柱体", e)
 
 
 @mcp.tool
@@ -3495,9 +3624,13 @@ def draw_cone(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         cone = zcad_conn.model.AddCone(center, base_radius, height)
         cone.Layer = layer
-        return f"成功绘制圆锥体: 底面圆心({center_x},{center_y},{center_z}), r={base_radius}, h={height}"
+        return _ok(
+            f"成功绘制圆锥体: 底面圆心({center_x},{center_y},{center_z}), r={base_radius}, h={height}",
+            handle=cone.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制圆锥体", e)
+        return _err("绘制圆锥体", e)
 
 
 @mcp.tool
@@ -3519,9 +3652,13 @@ def draw_sphere(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         sphere = zcad_conn.model.AddSphere(center, radius)
         sphere.Layer = layer
-        return f"成功绘制球体: 球心({center_x},{center_y},{center_z}), r={radius}"
+        return _ok(
+            f"成功绘制球体: 球心({center_x},{center_y},{center_z}), r={radius}",
+            handle=sphere.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制球体", e)
+        return _err("绘制球体", e)
 
 
 @mcp.tool
@@ -3544,9 +3681,13 @@ def draw_torus(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         torus = zcad_conn.model.AddTorus(center, torus_radius, tube_radius)
         torus.Layer = layer
-        return f"成功绘制圆环体: 中心({center_x},{center_y},{center_z}), R={torus_radius}, r={tube_radius}"
+        return _ok(
+            f"成功绘制圆环体: 中心({center_x},{center_y},{center_z}), R={torus_radius}, r={tube_radius}",
+            handle=torus.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制圆环体", e)
+        return _err("绘制圆环体", e)
 
 
 @mcp.tool
@@ -3570,9 +3711,13 @@ def draw_wedge(center_x: float, center_y: float, center_z: float,
         center = APoint(center_x, center_y, center_z)
         wedge = zcad_conn.model.AddWedge(center, length, width, height)
         wedge.Layer = layer
-        return f"成功绘制楔体: ({center_x},{center_y},{center_z}), {length}×{width}×{height}"
+        return _ok(
+            f"成功绘制楔体: ({center_x},{center_y},{center_z}), {length}×{width}×{height}",
+            handle=wedge.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制楔体", e)
+        return _err("绘制楔体", e)
 
 
 @mcp.tool
@@ -3597,9 +3742,13 @@ def draw_3d_polyline(vertices: list, layer: str = "0") -> str:
         coords = aDouble(*flat)
         pline = zcad_conn.model.Add3DPoly(coords)
         pline.Layer = layer
-        return f"成功绘制3D多段线: {len(flat)//3}个顶点, 图层: {layer}"
+        return _ok(
+            f"成功绘制3D多段线: {len(flat)//3}个顶点, 图层: {layer}",
+            handle=pline.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制3D多段线", e)
+        return _err("绘制3D多段线", e)
 
 
 @mcp.tool
@@ -3622,9 +3771,13 @@ def draw_ray(x1: float, y1: float, z1: float,
         p2 = APoint(x2, y2, z2)
         ray = zcad_conn.model.AddRay(p1, p2)
         ray.Layer = layer
-        return f"成功绘制射线: 起点({x1},{y1},{z1}), 图层: {layer}"
+        return _ok(
+            f"成功绘制射线: 起点({x1},{y1},{z1}), 图层: {layer}",
+            handle=ray.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制射线", e)
+        return _err("绘制射线", e)
 
 
 @mcp.tool
@@ -3647,9 +3800,13 @@ def draw_xline(x1: float, y1: float, z1: float,
         p2 = APoint(x2, y2, z2)
         xline = zcad_conn.model.AddXline(p1, p2)
         xline.Layer = layer
-        return f"成功绘制构造线: ({x1},{y1})-({x2},{y2}), 图层: {layer}"
+        return _ok(
+            f"成功绘制构造线: ({x1},{y1})-({x2},{y2}), 图层: {layer}",
+            handle=xline.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制构造线", e)
+        return _err("绘制构造线", e)
 
 
 @mcp.tool
@@ -3674,21 +3831,18 @@ def draw_mline(vertices: list, layer: str = "0") -> str:
         coords = aDouble(*flat)
         mline = zcad_conn.model.AddMLine(coords)
         mline.Layer = layer
-        return f"成功绘制多线: {len(flat)//3}个顶点, 图层: {layer}"
+        return _ok(
+            f"成功绘制多线: {len(flat)//3}个顶点, 图层: {layer}",
+            handle=mline.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("绘制多线", e)
+        return _err("绘制多线", e)
 
 
 # ==========================================
 # 实体属性设置工具（来自 IZcadEntity 属性 setter）
 # ==========================================
-
-def _find_entity(zcad_conn, object_type: str = None,
-                 predicate=None):
-    """查找实体的辅助函数"""
-    if predicate:
-        return zcad_conn.find_one(object_type, predicate=predicate)
-    return None
 
 @mcp.tool
 def set_entity_properties(object_type: str = None,
@@ -3699,7 +3853,8 @@ def set_entity_properties(object_type: str = None,
                           linetype: str = None,
                           linetype_scale: float = None,
                           lineweight: float = None,
-                          visible: bool = None) -> str:
+                          visible: bool = None,
+                          handle: str = None) -> str:
     """
     设置实体的通用属性
 
@@ -3713,20 +3868,18 @@ def set_entity_properties(object_type: str = None,
     - linetype_scale: 新线型比例（可选）
     - lineweight: 新线宽（可选）
     - visible: 可见性（可选）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
 
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return json.dumps({"found": False, "message": f"未找到: {object_type}.{property_name}={property_value}"})
+            return _ok(f"未找到: {object_type}.{property_name}={property_value}", found=False)
 
         updated = []
         if layer is not None:
@@ -3742,13 +3895,14 @@ def set_entity_properties(object_type: str = None,
         if visible is not None:
             obj.Visible = visible; updated.append(f"Visible={visible}")
 
-        return f"成功更新实体属性: {', '.join(updated)}" if updated else "未提供任何属性"
+        return _ok(f"成功更新实体属性: {', '.join(updated)}") if updated else _ok("未提供任何属性")
     except Exception as e:
-        return _format_error("设置实体属性", e)
+        return _err("设置实体属性", e)
 
 
 @mcp.tool
-def explode_entity(object_type: str, property_name: str, property_value: str) -> str:
+def explode_entity(object_type: str, property_name: str, property_value: str,
+                   handle: str = None) -> str:
     """
     分解实体
 
@@ -3756,61 +3910,61 @@ def explode_entity(object_type: str, property_name: str, property_value: str) ->
     - object_type: 对象类型
     - property_name: 用于定位的属性名
     - property_value: 用于定位的属性值
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象"
+            return _ok("未找到符合条件的对象", found=False)
         result = obj.Explode()
-        return f"成功分解实体，生成对象数: {len(result)}" if result else "分解成功（未生成对象或空）"
+        return _ok(f"成功分解实体，生成对象数: {len(result)}") if result else _ok("分解成功（未生成对象或空）")
     except Exception as e:
-        return _format_error("分解实体", e)
+        return _err("分解实体", e)
 
 
 @mcp.tool
 def mirror_3d_object(object_type: str, property_name: str, property_value: str,
                      x1: float, y1: float, z1: float,
                      x2: float, y2: float, z2: float,
-                     x3: float, y3: float, z3: float) -> str:
+                     x3: float, y3: float, z3: float,
+                     handle: str = None) -> str:
     """
     3D镜像对象
 
     参数:
     - object_type/property_name/property_value: 定位对象
     - x1,y1,z1,x2,y2,z2,x3,y3,z3: 定义镜像平面的三个点
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象"
+            return _ok("未找到符合条件的对象", found=False)
         p1 = APoint(x1, y1, z1)
         p2 = APoint(x2, y2, z2)
         p3 = APoint(x3, y3, z3)
         mirror_obj = obj.Mirror3D(p1, p2, p3)
-        return f"成功3D镜像对象"
+        return _ok("成功3D镜像对象")
     except Exception as e:
-        return _format_error("3D镜像", e)
+        return _err("3D镜像", e)
 
 
 @mcp.tool
 def rotate_3d_object(object_type: str, property_name: str, property_value: str,
                      x1: float, y1: float, z1: float,
                      x2: float, y2: float, z2: float,
-                     rotation_angle: float) -> str:
+                     rotation_angle: float,
+                     handle: str = None) -> str:
     """
     3D旋转对象
 
@@ -3819,24 +3973,23 @@ def rotate_3d_object(object_type: str, property_name: str, property_value: str,
     - x1,y1,z1: 旋转轴上第一点
     - x2,y2,z2: 旋转轴上第二点
     - rotation_angle: 旋转角度（弧度）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return f"未找到符合条件的对象"
+            return _ok("未找到符合条件的对象", found=False)
         p1 = APoint(x1, y1, z1)
         p2 = APoint(x2, y2, z2)
         obj.Rotate3D(p1, p2, rotation_angle)
-        return f"成功3D旋转对象, 角度={rotation_angle:.4f}弧度"
+        return _ok(f"成功3D旋转对象, 角度={rotation_angle:.4f}弧度")
     except Exception as e:
-        return _format_error("3D旋转", e)
+        return _err("3D旋转", e)
 
 
 # ==========================================
@@ -3862,9 +4015,9 @@ def create_selection_set(name: str) -> str:
         except Exception:
             pass
         sel = zcad_conn.doc.SelectionSets.Add(name)
-        return f"成功创建选择集: {name}"
+        return _ok(f"成功创建选择集: {name}")
     except Exception as e:
-        return _format_error("创建选择集", e)
+        return _err("创建选择集", e)
 
 
 @mcp.tool
@@ -3895,9 +4048,9 @@ def select_objects(mode: int, name: str = "",
         p1 = APoint(x1, y1, 0)
         p2 = APoint(x2, y2, 0)
         sel.Select(mode, p1, p2)
-        return f"成功选择对象 (模式={mode}), 选择集: {sel_name}, 数量: {sel.Count}"
+        return _ok(f"成功选择对象 (模式={mode}), 选择集: {sel_name}, 数量: {sel.Count}")
     except Exception as e:
-        return _format_error("选择对象", e)
+        return _err("选择对象", e)
 
 
 @mcp.tool
@@ -3920,9 +4073,9 @@ def select_on_screen(name: str = "SS1") -> str:
         sel = zcad_conn.doc.SelectionSets.Add(name)
         zcad_conn.prompt("请在屏幕上选择对象，按Enter确认...")
         sel.SelectOnScreen()
-        return f"屏幕选择完成，选择集: {name}, 数量: {sel.Count}"
+        return _ok(f"屏幕选择完成，选择集: {name}, 数量: {sel.Count}")
     except Exception as e:
-        return _format_error("屏幕选择", e)
+        return _err("屏幕选择", e)
 
 
 @mcp.tool
@@ -3953,9 +4106,9 @@ def select_by_polygon(mode: int, points: list, name: str = "SS1") -> str:
                 flat.append(p)
         coords = aDouble(*flat)
         sel.SelectByPolygon(mode, coords)
-        return f"多边形选择完成，选择集: {name}, 数量: {sel.Count}"
+        return _ok(f"多边形选择完成，选择集: {name}, 数量: {sel.Count}")
     except Exception as e:
-        return _format_error("多边形选择", e)
+        return _err("多边形选择", e)
 
 
 @mcp.tool
@@ -3972,9 +4125,9 @@ def clear_selection_set(name: str = "SS1") -> str:
         zcad_conn, _ = get_cad_connection()
         sel = zcad_conn.doc.SelectionSets.Item(name)
         sel.Clear()
-        return f"已清空选择集: {name}"
+        return _ok(f"已清空选择集: {name}")
     except Exception as e:
-        return _format_error("清空选择集", e)
+        return _err("清空选择集", e)
 
 
 # ==========================================
@@ -3984,7 +4137,8 @@ def clear_selection_set(name: str = "SS1") -> str:
 @mcp.tool
 def modify_circle(object_type: str, property_name: str, property_value: str,
                   radius: float = None, center_x: float = None,
-                  center_y: float = None, center_z: float = None) -> str:
+                  center_y: float = None, center_z: float = None,
+                  handle: str = None) -> str:
     """
     修改圆的几何属性
 
@@ -3992,52 +4146,51 @@ def modify_circle(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位圆对象
     - radius: 新半径（可选）
     - center_x,center_y,center_z: 新圆心坐标（可选）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Circle", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Circle",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的圆"
+            return _ok("未找到符合条件的圆", found=False)
         updated = []
         if radius is not None:
             obj.Radius = radius; updated.append(f"Radius={radius}")
         if center_x is not None or center_y is not None or center_z is not None:
             center = APoint(center_x or 0, center_y or 0, center_z or 0)
             obj.Center = center; updated.append(f"Center=({center_x},{center_y},{center_z})")
-        return f"成功修改圆: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改圆: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改圆", e)
+        return _err("修改圆", e)
 
 
 @mcp.tool
 def modify_arc(object_type: str, property_name: str, property_value: str,
                radius: float = None, center_x: float = None,
                center_y: float = None, center_z: float = None,
-               start_angle: float = None, end_angle: float = None) -> str:
+               start_angle: float = None, end_angle: float = None,
+               handle: str = None) -> str:
     """
     修改圆弧的几何属性
 
     参数:
     - object_type/property_name/property_value: 定位圆弧对象
     - radius/center_x,y,z/start_angle/end_angle: 新的几何参数
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Arc", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Arc",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的圆弧"
+            return _ok("未找到符合条件的圆弧", found=False)
         updated = []
         if radius is not None:
             obj.Radius = radius; updated.append(f"Radius={radius}")
@@ -4048,15 +4201,16 @@ def modify_arc(object_type: str, property_name: str, property_value: str,
             obj.StartAngle = start_angle; updated.append(f"StartAngle={start_angle:.4f}")
         if end_angle is not None:
             obj.EndAngle = end_angle; updated.append(f"EndAngle={end_angle:.4f}")
-        return f"成功修改圆弧: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改圆弧: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改圆弧", e)
+        return _err("修改圆弧", e)
 
 
 @mcp.tool
 def modify_line(object_type: str, property_name: str, property_value: str,
                 x1: float = None, y1: float = None, z1: float = None,
-                x2: float = None, y2: float = None, z2: float = None) -> str:
+                x2: float = None, y2: float = None, z2: float = None,
+                handle: str = None) -> str:
     """
     修改直线的端点
 
@@ -4064,18 +4218,17 @@ def modify_line(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位直线对象
     - x1,y1,z1: 新起点坐标（可选）
     - x2,y2,z2: 新终点坐标（可选）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Line", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Line",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的直线"
+            return _ok("未找到符合条件的直线", found=False)
         updated = []
         if x1 is not None or y1 is not None or z1 is not None:
             obj.StartPoint = APoint(x1 or 0, y1 or 0, z1 or 0)
@@ -4083,16 +4236,17 @@ def modify_line(object_type: str, property_name: str, property_value: str,
         if x2 is not None or y2 is not None or z2 is not None:
             obj.EndPoint = APoint(x2 or 0, y2 or 0, z2 or 0)
             updated.append(f"End=({x2},{y2},{z2})")
-        return f"成功修改直线: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改直线: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改直线", e)
+        return _err("修改直线", e)
 
 
 @mcp.tool
 def modify_text(object_type: str, property_name: str, property_value: str,
                 text: str = None, height: float = None,
                 rotation: float = None, stylename: str = None,
-                x: float = None, y: float = None, z: float = None) -> str:
+                x: float = None, y: float = None, z: float = None,
+                handle: str = None) -> str:
     """
     修改单行文本属性
 
@@ -4103,18 +4257,17 @@ def modify_text(object_type: str, property_name: str, property_value: str,
     - rotation: 新旋转角（弧度）（可选）
     - stylename: 新文字样式名（可选）
     - x,y,z: 新插入点坐标（可选）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Text", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Text",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的文本"
+            return _ok("未找到符合条件的文本", found=False)
         updated = []
         if text is not None:
             obj.TextString = text; updated.append(f"Text='{text}'")
@@ -4127,16 +4280,17 @@ def modify_text(object_type: str, property_name: str, property_value: str,
         if x is not None or y is not None or z is not None:
             obj.InsertionPoint = APoint(x or 0, y or 0, z or 0)
             updated.append(f"Pos=({x},{y},{z})")
-        return f"成功修改文本: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改文本: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改文本", e)
+        return _err("修改文本", e)
 
 
 @mcp.tool
 def modify_mtext(object_type: str, property_name: str, property_value: str,
                  text: str = None, height: float = None,
                  width: float = None, rotation: float = None,
-                 attachment_point: int = None) -> str:
+                 attachment_point: int = None,
+                 handle: str = None) -> str:
     """
     修改多行文本属性
 
@@ -4147,18 +4301,17 @@ def modify_mtext(object_type: str, property_name: str, property_value: str,
     - width: 新文本框宽度
     - rotation: 新旋转角（弧度）
     - attachment_point: 对齐点类型
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("MText", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="MText",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的多行文本"
+            return _ok("未找到符合条件的多行文本", found=False)
         updated = []
         if text is not None:
             obj.TextString = text; updated.append("Text updated")
@@ -4170,15 +4323,16 @@ def modify_mtext(object_type: str, property_name: str, property_value: str,
             obj.Rotation = rotation; updated.append(f"Rotation={rotation:.4f}")
         if attachment_point is not None:
             obj.AttachmentPoint = attachment_point; updated.append(f"Attachment={attachment_point}")
-        return f"成功修改多行文本: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改多行文本: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改多行文本", e)
+        return _err("修改多行文本", e)
 
 
 @mcp.tool
 def modify_polyline(object_type: str, property_name: str, property_value: str,
                     closed: bool = None, constant_width: float = None,
-                    elevation: float = None) -> str:
+                    elevation: float = None,
+                    handle: str = None) -> str:
     """
     修改多段线属性
 
@@ -4187,18 +4341,17 @@ def modify_polyline(object_type: str, property_name: str, property_value: str,
     - closed: 是否闭合
     - constant_width: 等宽值
     - elevation: 高程
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(None, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=None,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的多段线"
+            return _ok("未找到符合条件的多段线", found=False)
         updated = []
         if closed is not None and hasattr(obj, 'Closed'):
             obj.Closed = closed; updated.append(f"Closed={closed}")
@@ -4206,16 +4359,17 @@ def modify_polyline(object_type: str, property_name: str, property_value: str,
             obj.ConstantWidth = constant_width; updated.append(f"Width={constant_width}")
         if elevation is not None and hasattr(obj, 'Elevation'):
             obj.Elevation = elevation; updated.append(f"Elevation={elevation}")
-        return f"成功修改多段线: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改多段线: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改多段线", e)
+        return _err("修改多段线", e)
 
 
 @mcp.tool
 def modify_spline(object_type: str, property_name: str, property_value: str,
                   closed: bool = None, fit_tolerance: float = None,
                   start_tangent_x: float = None, start_tangent_y: float = None,
-                  end_tangent_x: float = None, end_tangent_y: float = None) -> str:
+                  end_tangent_x: float = None, end_tangent_y: float = None,
+                  handle: str = None) -> str:
     """
     修改样条曲线属性
 
@@ -4225,18 +4379,17 @@ def modify_spline(object_type: str, property_name: str, property_value: str,
     - fit_tolerance: 拟合公差
     - start_tangent_x/y: 起点切向
     - end_tangent_x/y: 终点切向
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Spline", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Spline",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的样条曲线"
+            return _ok("未找到符合条件的样条曲线", found=False)
         updated = []
         if closed is not None:
             obj.Closed = closed; updated.append(f"Closed={closed}")
@@ -4248,38 +4401,38 @@ def modify_spline(object_type: str, property_name: str, property_value: str,
         if end_tangent_x is not None or end_tangent_y is not None:
             obj.EndTangent = APoint(end_tangent_x or 0, end_tangent_y or 0, 0)
             updated.append("EndTangent updated")
-        return f"成功修改样条曲线: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改样条曲线: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改样条曲线", e)
+        return _err("修改样条曲线", e)
 
 
 @mcp.tool
 def offset_entity(object_type: str, property_name: str, property_value: str,
-                  distance: float) -> str:
+                  distance: float,
+                  handle: str = None) -> str:
     """
     偏移实体（线、圆、圆弧、多段线、样条等）
 
     参数:
     - object_type/property_name/property_value: 定位对象
     - distance: 偏移距离
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的对象"
+            return _ok("未找到符合条件的对象", found=False)
         if not hasattr(obj, 'Offset'):
-            return "此对象不支持偏移操作"
+            return _ok("此对象不支持偏移操作")
         result = obj.Offset(distance)
-        return f"成功偏移实体, 距离={distance}, 生成对象数: {len(result)}" if result else "偏移完成"
+        return _ok(f"成功偏移实体, 距离={distance}, 生成对象数: {len(result)}") if result else _ok("偏移完成")
     except Exception as e:
-        return _format_error("偏移实体", e)
+        return _err("偏移实体", e)
 
 
 # ==========================================
@@ -4301,43 +4454,49 @@ def create_block_definition(name: str, x: float = 0, y: float = 0, z: float = 0)
         zcad_conn, _ = get_cad_connection()
         point = APoint(x, y, z)
         blk = zcad_conn.doc.Blocks.Add(point, name)
-        return f"成功创建图块定义: {name}, 基点({x},{y},{z})"
+        return _ok(
+            f"成功创建图块定义: {name}, 基点({x},{y},{z})",
+            name=name,
+            handle=getattr(blk, "Handle", None),
+        )
     except Exception as e:
-        return _format_error("创建图块定义", e)
+        return _err("创建图块定义", e)
 
 
 @mcp.tool
-def explode_block_reference(object_type: str, property_name: str, property_value: str) -> str:
+def explode_block_reference(object_type: str, property_name: str, property_value: str,
+                            handle: str = None) -> str:
     """
     分解图块引用为独立实体
 
     参数:
     - object_type/property_name/property_value: 定位图块引用对象
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("BlockReference", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="BlockReference",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的图块引用"
+            return _ok("未找到符合条件的图块引用", found=False)
         result = obj.Explode()
-        return f"成功分解图块引用, 生成对象数: {len(result)}" if result else "分解成功"
+        return _ok(f"成功分解图块引用, 生成对象数: {len(result)}") if result else _ok("分解成功")
     except Exception as e:
-        return _format_error("分解图块引用", e)
+        return _err("分解图块引用", e)
 
 
 @mcp.tool
-def get_dynamic_block_properties(object_type: str, property_name: str, property_value: str) -> str:
+def get_dynamic_block_properties(object_type: str, property_name: str, property_value: str,
+                                 handle: str = None) -> str:
     """
     获取动态块的属性信息
 
     参数:
     - object_type/property_name/property_value: 定位动态图块引用
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON格式的动态属性列表
     """
@@ -4348,9 +4507,10 @@ def get_dynamic_block_properties(object_type: str, property_name: str, property_
                 if hasattr(obj, 'IsDynamicBlock'):
                     return obj.IsDynamicBlock
             return False
-        obj = zcad_conn.find_one("BlockReference", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="BlockReference", handle=handle,
+                           predicate=pred if not handle else None)
         if not obj or not hasattr(obj, 'IsDynamicBlock') or not obj.IsDynamicBlock:
-            return "未找到符合条件的动态图块引用"
+            return _ok("未找到符合条件的动态图块引用", found=False)
         props = obj.GetDynamicBlockProperties()
         result = []
         for p in props:
@@ -4359,30 +4519,30 @@ def get_dynamic_block_properties(object_type: str, property_name: str, property_
                 "value": p.Value if hasattr(p, 'Value') else "",
                 "units_type": p.UnitsType if hasattr(p, 'UnitsType') else "",
             })
-        return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return _format_error("获取动态块属性", e)
+        return _err("获取动态块属性", e)
 
 
 @mcp.tool
-def get_constant_attributes(object_type: str, property_name: str, property_value: str) -> str:
+def get_constant_attributes(object_type: str, property_name: str, property_value: str,
+                            handle: str = None) -> str:
     """
     获取图块引用的常量属性
 
     参数:
     - object_type/property_name/property_value: 定位图块引用
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON格式的常量属性列表
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("BlockReference", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="BlockReference",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的图块引用"
+            return _ok("未找到符合条件的图块引用", found=False)
         attrs = obj.GetConstantAttributes()
         result = []
         for attr in attrs:
@@ -4390,9 +4550,9 @@ def get_constant_attributes(object_type: str, property_name: str, property_value
                 "tag": attr.TagString if hasattr(attr, 'TagString') else "",
                 "text": attr.TextString if hasattr(attr, 'TextString') else "",
             })
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return _format_error("获取常量属性", e)
+        return _err("获取常量属性", e)
 
 
 # ==========================================
@@ -4401,7 +4561,8 @@ def get_constant_attributes(object_type: str, property_name: str, property_value
 
 @mcp.tool
 def set_cell_text(object_type: str, property_name: str, property_value: str,
-                  row: int, col: int, text: str) -> str:
+                  row: int, col: int, text: str,
+                  handle: str = None) -> str:
     """
     设置表格单元格文本
 
@@ -4409,54 +4570,54 @@ def set_cell_text(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位表格对象
     - row, col: 行/列索引（0-based）
     - text: 单元格文本
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         obj.SetText(row, col, text)
-        return f"成功设置表格单元格[{row},{col}] = '{text}'"
+        return _ok(f"成功设置表格单元格[{row},{col}] = '{text}'")
     except Exception as e:
-        return _format_error("设置单元格文本", e)
+        return _err("设置单元格文本", e)
 
 
 @mcp.tool
 def get_cell_text(object_type: str, property_name: str, property_value: str,
-                  row: int, col: int) -> str:
+                  row: int, col: int,
+                  handle: str = None) -> str:
     """
     获取表格单元格文本
 
     参数:
     - object_type/property_name/property_value: 定位表格对象
     - row, col: 行/列索引
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 单元格文本内容
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         text = obj.GetText(row, col)
-        return f"表格[{row},{col}] = '{text}'"
+        return _ok("获取成功", row=row, col=col, text=text)
     except Exception as e:
-        return _format_error("获取单元格文本", e)
+        return _err("获取单元格文本", e)
 
 
 @mcp.tool
 def insert_table_rows(object_type: str, property_name: str, property_value: str,
-                      row_index: int, count: int = 1, height: float = 0) -> str:
+                      row_index: int, count: int = 1, height: float = 0,
+                      handle: str = None) -> str:
     """
     在表格中插入行
 
@@ -4465,27 +4626,27 @@ def insert_table_rows(object_type: str, property_name: str, property_value: str,
     - row_index: 插入位置的行索引
     - count: 插入行数
     - height: 行高（0=默认）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         obj.InsertRows(row_index, count, height)
-        return f"成功在第{row_index}行插入{count}行"
+        return _ok(f"成功在第{row_index}行插入{count}行")
     except Exception as e:
-        return _format_error("插入表格行", e)
+        return _err("插入表格行", e)
 
 
 @mcp.tool
 def delete_table_rows(object_type: str, property_name: str, property_value: str,
-                      row_index: int, count: int = 1) -> str:
+                      row_index: int, count: int = 1,
+                      handle: str = None) -> str:
     """
     从表格中删除行
 
@@ -4493,27 +4654,27 @@ def delete_table_rows(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位表格对象
     - row_index: 起始行索引
     - count: 删除行数
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         obj.DeleteRows(row_index, count)
-        return f"成功从第{row_index}行删除{count}行"
+        return _ok(f"成功从第{row_index}行删除{count}行")
     except Exception as e:
-        return _format_error("删除表格行", e)
+        return _err("删除表格行", e)
 
 
 @mcp.tool
 def set_column_width(object_type: str, property_name: str, property_value: str,
-                     col: int, width: float) -> str:
+                     col: int, width: float,
+                     handle: str = None) -> str:
     """
     设置表格列宽
 
@@ -4521,27 +4682,27 @@ def set_column_width(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位表格对象
     - col: 列索引
     - width: 新列宽
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         obj.SetColumnWidth(col, width)
-        return f"成功设置第{col}列宽度={width}"
+        return _ok(f"成功设置第{col}列宽度={width}")
     except Exception as e:
-        return _format_error("设置列宽", e)
+        return _err("设置列宽", e)
 
 
 @mcp.tool
 def set_row_height(object_type: str, property_name: str, property_value: str,
-                   row: int, height: float) -> str:
+                   row: int, height: float,
+                   handle: str = None) -> str:
     """
     设置表格行高
 
@@ -4549,27 +4710,27 @@ def set_row_height(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位表格对象
     - row: 行索引
     - height: 新行高
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         obj.SetRowHeight(row, height)
-        return f"成功设置第{row}行高度={height}"
+        return _ok(f"成功设置第{row}行高度={height}")
     except Exception as e:
-        return _format_error("设置行高", e)
+        return _err("设置行高", e)
 
 
 @mcp.tool
 def merge_cells(object_type: str, property_name: str, property_value: str,
-                min_row: int, max_row: int, min_col: int, max_col: int) -> str:
+                min_row: int, max_row: int, min_col: int, max_col: int,
+                handle: str = None) -> str:
     """
     合并表格单元格
 
@@ -4577,22 +4738,21 @@ def merge_cells(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位表格对象
     - min_row, max_row: 行范围（包含）
     - min_col, max_col: 列范围（包含）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Table", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Table",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到符合条件的表格"
+            return _ok("未找到符合条件的表格", found=False)
         obj.MergeCells(min_row, max_row, min_col, max_col)
-        return f"成功合并单元格: 行{min_row}-{max_row}, 列{min_col}-{max_col}"
+        return _ok(f"成功合并单元格: 行{min_row}-{max_row}, 列{min_col}-{max_col}")
     except Exception as e:
-        return _format_error("合并单元格", e)
+        return _err("合并单元格", e)
 
 
 # ==========================================
@@ -4627,32 +4787,36 @@ def add_mleader(points: list, text: str = "",
         if text:
             mleader.TextString = text
             mleader.TextHeight = text_height
-        return f"成功添加多重引线: {len(flat)//3}个点, 图层: {layer}"
+        return _ok(
+            f"成功添加多重引线: {len(flat)//3}个点, 图层: {layer}",
+            handle=mleader.Handle,
+            layer=layer,
+        )
     except Exception as e:
-        return _format_error("添加多重引线", e)
+        return _err("添加多重引线", e)
 
 
 @mcp.tool
 def add_mleader_line(object_type: str, property_name: str, property_value: str,
-                     points: list) -> str:
+                     points: list,
+                     handle: str = None) -> str:
     """
     向现有多重引线添加引线
 
     参数:
     - object_type/property_name/property_value: 定位MLeader对象
     - points: 新引线的点列表 [[x1,y1,z1],[x2,y2,z2],...]
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("MLeader", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="MLeader",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到MLeader对象"
+            return _ok("未找到MLeader对象", found=False)
         flat = []
         for v in points:
             if isinstance(v, (list, tuple)):
@@ -4661,39 +4825,39 @@ def add_mleader_line(object_type: str, property_name: str, property_value: str,
                 flat.append(v)
         coords = aDouble(*flat)
         idx = obj.AddLeaderLine(0, coords)
-        return f"成功添加引线到MLeader, leaderLineIndex={idx}"
+        return _ok(f"成功添加引线到MLeader, leaderLineIndex={idx}")
     except Exception as e:
-        return _format_error("添加MLeader引线", e)
+        return _err("添加MLeader引线", e)
 
 
 @mcp.tool
 def get_mleader_vertices(object_type: str, property_name: str, property_value: str,
-                         leader_line_index: int = 0) -> str:
+                         leader_line_index: int = 0,
+                         handle: str = None) -> str:
     """
     获取多重引线的顶点
 
     参数:
     - object_type/property_name/property_value: 定位MLeader对象
     - leader_line_index: 引线索引
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON格式的顶点列表
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("MLeader", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="MLeader",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到MLeader对象"
+            return _ok("未找到MLeader对象", found=False)
         verts = obj.GetLeaderLineVertices(leader_line_index)
         points = list(verts)
         result = [{"x": points[i], "y": points[i+1], "z": points[i+2]}
                   for i in range(0, len(points), 3)]
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return _format_error("获取MLeader顶点", e)
+        return _err("获取MLeader顶点", e)
 
 
 # ==========================================
@@ -4704,7 +4868,8 @@ def get_mleader_vertices(object_type: str, property_name: str, property_value: s
 def set_hatch_properties(object_type: str, property_name: str, property_value: str,
                          pattern_name: str = None, pattern_type: int = None,
                          pattern_angle: float = None, pattern_scale: float = None,
-                         pattern_double: bool = None) -> str:
+                         pattern_double: bool = None,
+                         handle: str = None) -> str:
     """
     修改填充图案的属性
 
@@ -4715,18 +4880,17 @@ def set_hatch_properties(object_type: str, property_name: str, property_value: s
     - pattern_angle: 新角度（弧度）
     - pattern_scale: 新比例
     - pattern_double: 是否双线填充
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Hatch", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Hatch",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到填充对象"
+            return _ok("未找到填充对象", found=False)
         updated = []
         if pattern_name is not None and pattern_type is not None:
             obj.SetPattern(pattern_type, pattern_name)
@@ -4743,32 +4907,32 @@ def set_hatch_properties(object_type: str, property_name: str, property_value: s
             obj.PatternDouble = pattern_double; updated.append(f"Double={pattern_double}")
         if updated:
             obj.Evaluate()
-        return f"成功修改填充: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改填充: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("修改填充属性", e)
+        return _err("修改填充属性", e)
 
 
 @mcp.tool
 def add_inner_loop(object_type: str, property_name: str, property_value: str,
-                   objects: list) -> str:
+                   objects: list,
+                   handle: str = None) -> str:
     """
     向填充添加内边界（空洞）
 
     参数:
     - object_type/property_name/property_value: 定位填充对象
     - objects: 内边界对象ID列表（实体ObjectID字符串列表）
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Hatch", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Hatch",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到填充对象"
+            return _ok("未找到填充对象", found=False)
         obj_array = []
         for oid in objects:
             try:
@@ -4778,9 +4942,9 @@ def add_inner_loop(object_type: str, property_name: str, property_value: str,
         if obj_array:
             obj.AppendInnerLoop(obj_array)
             obj.Evaluate()
-        return f"成功添加内边界: {len(obj_array)}个对象"
+        return _ok(f"成功添加内边界: {len(obj_array)}个对象")
     except Exception as e:
-        return _format_error("添加内边界", e)
+        return _err("添加内边界", e)
 
 
 # ==========================================
@@ -4790,13 +4954,15 @@ def add_inner_loop(object_type: str, property_name: str, property_value: str,
 @mcp.tool
 def get_intersection(object_type: str, property_name: str, property_value: str,
                      other_object_type: str, other_property_name: str,
-                     other_property_value: str) -> str:
+                     other_property_value: str,
+                     handle1: str = None, handle2: str = None) -> str:
     """
     获取两个实体的交点
 
     参数:
     - object_type/property_name/property_value: 定位第一个对象
     - other_object_type/other_property_name/other_property_value: 定位第二个对象
+    - handle1, handle2: 两实体句柄（可选，分别优先于属性定位）
 
     返回: JSON格式的交点列表
     """
@@ -4815,17 +4981,19 @@ def get_intersection(object_type: str, property_name: str, property_value: str,
 
         from_pred = make_pred(object_type, property_name, property_value)
         to_pred = make_pred(other_object_type, other_property_name, other_property_value)
-        obj1 = zcad_conn.find_one(object_type, predicate=from_pred)
-        obj2 = zcad_conn.find_one(other_object_type, predicate=to_pred)
+        obj1 = _find_entity(zcad_conn, object_type=object_type, handle=handle1,
+                            predicate=from_pred if not handle1 else None)
+        obj2 = _find_entity(zcad_conn, object_type=other_object_type, handle=handle2,
+                            predicate=to_pred if not handle2 else None)
         if not obj1 or not obj2:
-            return "未找到指定的实体对"
+            return _ok("未找到指定的实体对", found=False)
         points = obj1.IntersectWith(obj2, 0)
         pts = list(points)
         result = [{"x": pts[i], "y": pts[i+1], "z": pts[i+2]}
                   for i in range(0, len(pts), 3)]
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=result)
     except Exception as e:
-        return _format_error("获取交点", e)
+        return _err("获取交点", e)
 
 
 # ==========================================
@@ -4865,9 +5033,9 @@ def get_summary_info() -> str:
                     info['custom'] = custom
             except Exception:
                 pass
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("获取摘要信息", e)
+        return _err("获取摘要信息", e)
 
 
 @mcp.tool
@@ -4896,9 +5064,9 @@ def set_summary_info(title: str = None, subject: str = None,
             si.Keywords = keywords; updated.append(f"Keywords='{keywords}'")
         if comments is not None:
             si.Comments = comments; updated.append(f"Comments='{comments}'")
-        return f"成功更新摘要: {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功更新摘要: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
-        return _format_error("设置摘要信息", e)
+        return _err("设置摘要信息", e)
 
 
 # ==========================================
@@ -4918,9 +5086,9 @@ def new_document(template_path: str = "") -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         doc = zcad_conn.doc.New(template_path) if template_path else zcad_conn.doc.New("")
-        return f"成功新建文档: {doc.Name}"
+        return _ok(f"成功新建文档: {doc.Name}")
     except Exception as e:
-        return _format_error("新建文档", e)
+        return _err("新建文档", e)
 
 
 @mcp.tool
@@ -4939,9 +5107,9 @@ def list_documents() -> str:
                 "path": doc.Path if hasattr(doc, 'Path') else "",
                 "saved": doc.Saved if hasattr(doc, 'Saved') else None,
             })
-        return json.dumps(docs, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=docs)
     except Exception as e:
-        return f"获取文档列表失败: {str(e)}"
+        return _err("获取文档列表", e)
 
 
 @mcp.tool
@@ -4958,9 +5126,9 @@ def activate_document(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         doc = zcad_conn.app.Documents.Item(name)
         doc.Activate()
-        return f"成功激活文档: {name}"
+        return _ok(f"成功激活文档: {name}")
     except Exception as e:
-        return _format_error("激活文档", e)
+        return _err("激活文档", e)
 
 
 # ==========================================
@@ -4980,9 +5148,14 @@ def add_layout(name: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Layouts.Add(name)
-        return f"成功添加布局: {name}"
+        try:
+            layout_obj = zcad_conn.doc.Layouts.Item(name)
+            h = getattr(layout_obj, "Handle", None)
+        except Exception:
+            h = None
+        return _ok(f"成功添加布局: {name}", name=name, handle=h)
     except Exception as e:
-        return _format_error("添加布局", e)
+        return _err("添加布局", e)
 
 
 @mcp.tool
@@ -4999,9 +5172,9 @@ def set_active_layout(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         layout = zcad_conn.doc.Layouts.Item(name)
         zcad_conn.doc.ActiveLayout = layout
-        return f"成功设置活动布局: {name}"
+        return _ok(f"成功设置活动布局: {name}")
     except Exception as e:
-        return _format_error("设置活动布局", e)
+        return _err("设置活动布局", e)
 
 
 # ==========================================
@@ -5026,9 +5199,9 @@ def list_ucs() -> str:
                 except Exception:
                     pass
             ucss.append(info)
-        return json.dumps(ucss, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=ucss)
     except Exception as e:
-        return f"获取UCS列表失败: {str(e)}"
+        return _err("获取UCS列表", e)
 
 
 @mcp.tool
@@ -5052,9 +5225,9 @@ def add_ucs(name: str, origin_x: float, origin_y: float, origin_z: float,
         x_axis = APoint(x_axis_x, x_axis_y, x_axis_z)
         y_axis = APoint(y_axis_x, y_axis_y, y_axis_z)
         zcad_conn.doc.UserCoordinateSystems.Add(origin, x_axis, y_axis, name)
-        return f"成功创建UCS: {name}"
+        return _ok(f"成功创建UCS: {name}")
     except Exception as e:
-        return _format_error("创建UCS", e)
+        return _err("创建UCS", e)
 
 
 @mcp.tool
@@ -5071,9 +5244,9 @@ def set_active_ucs(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         ucs = zcad_conn.doc.UserCoordinateSystems.Item(name)
         zcad_conn.doc.ActiveUCS = ucs
-        return f"成功设置活动UCS: {name}"
+        return _ok(f"成功设置活动UCS: {name}")
     except Exception as e:
-        return _format_error("设置活动UCS", e)
+        return _err("设置活动UCS", e)
 
 
 # ==========================================
@@ -5092,9 +5265,9 @@ def list_groups() -> str:
         groups = []
         for g in zcad_conn.doc.Groups:
             groups.append({"name": g.Name, "count": g.Count})
-        return json.dumps(groups, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=groups)
     except Exception as e:
-        return f"获取编组列表失败: {str(e)}"
+        return _err("获取编组列表", e)
 
 
 @mcp.tool
@@ -5110,37 +5283,37 @@ def create_group(name: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Groups.Add(name)
-        return f"成功创建编组: {name}"
+        return _ok(f"成功创建编组: {name}")
     except Exception as e:
-        return _format_error("创建编组", e)
+        return _err("创建编组", e)
 
 
 @mcp.tool
 def append_to_group(group_name: str,
-                    object_type: str, property_name: str, property_value: str) -> str:
+                    object_type: str, property_name: str, property_value: str,
+                    handle: str = None) -> str:
     """
     将对象添加到编组
 
     参数:
     - group_name: 编组名称
     - object_type/property_name/property_value: 定位要添加的对象
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
         group = zcad_conn.doc.Groups.Item(group_name)
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到要添加的对象"
+            return _ok("未找到要添加的对象", found=False)
         group.AppendItems([obj])
-        return f"成功将对象添加到编组 '{group_name}'"
+        return _ok(f"成功将对象添加到编组 '{group_name}'")
     except Exception as e:
-        return _format_error("添加到编组", e)
+        return _err("添加到编组", e)
 
 
 # ==========================================
@@ -5169,9 +5342,9 @@ def list_views() -> str:
             if hasattr(v, 'Width'):
                 info['width'] = v.Width
             views.append(info)
-        return json.dumps(views, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=views)
     except Exception as e:
-        return f"获取视图列表失败: {str(e)}"
+        return _err("获取视图列表", e)
 
 
 @mcp.tool
@@ -5187,64 +5360,64 @@ def add_view(name: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Views.Add(name)
-        return f"成功创建视图: {name}"
+        return _ok(f"成功创建视图: {name}")
     except Exception as e:
-        return _format_error("创建视图", e)
+        return _err("创建视图", e)
 
 
 @mcp.tool
 def set_view(object_type: str, property_name: str, property_value: str,
-             view_name: str) -> str:
+             view_name: str,
+             handle: str = None) -> str:
     """
     设置视口显式视图
 
     参数:
     - object_type/property_name/property_value: 定位PViewport对象
     - view_name: 命名视图名称
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        vp = zcad_conn.find_one("PViewport", predicate=pred)
+        vp = _find_entity(zcad_conn, object_type="PViewport",
+                          property_name=property_name, property_value=property_value,
+                          handle=handle)
         if not vp:
-            return "未找到PViewport对象"
+            return _ok("未找到PViewport对象", found=False)
         view = zcad_conn.doc.Views.Item(view_name)
         vp.SetView(view)
-        return f"成功设置视口视图: {view_name}"
+        return _ok(f"成功设置视口视图: {view_name}")
     except Exception as e:
-        return _format_error("设置视口视图", e)
+        return _err("设置视口视图", e)
 
 
 @mcp.tool
 def lock_viewport(object_type: str, property_name: str, property_value: str,
-                  locked: bool = True) -> str:
+                  locked: bool = True,
+                  handle: str = None) -> str:
     """
     锁定/解锁图纸空间视口
 
     参数:
     - object_type/property_name/property_value: 定位PViewport对象
     - locked: True=锁定, False=解锁
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        vp = zcad_conn.find_one("PViewport", predicate=pred)
+        vp = _find_entity(zcad_conn, object_type="PViewport",
+                          property_name=property_name, property_value=property_value,
+                          handle=handle)
         if not vp:
-            return "未找到PViewport对象"
+            return _ok("未找到PViewport对象", found=False)
         vp.DisplayLocked = locked
-        return f"成功{'锁定' if locked else '解锁'}视口"
+        return _ok(f"成功{'锁定' if locked else '解锁'}视口")
     except Exception as e:
-        return _format_error("锁定视口", e)
+        return _err("锁定视口", e)
 
 
 # ==========================================
@@ -5270,11 +5443,11 @@ def save_layer_state(name: str) -> str:
             lsm = zcad_conn.doc.Database.Layers.LayerStateManager \
                 if hasattr(zcad_conn.doc.Database.Layers, 'LayerStateManager') else None
         if lsm is None:
-            return "图层状态管理器不可用"
+            return _ok("图层状态管理器不可用")
         lsm.Save(name, 255)
-        return f"成功保存图层状态: {name}"
+        return _ok(f"成功保存图层状态: {name}")
     except Exception as e:
-        return _format_error("保存图层状态", e)
+        return _err("保存图层状态", e)
 
 
 @mcp.tool
@@ -5291,9 +5464,9 @@ def restore_layer_state(name: str) -> str:
         zcad_conn, _ = get_cad_connection()
         lsm = zcad_conn.doc.Layers.LayerStateManager
         lsm.Restore(name)
-        return f"成功恢复图层状态: {name}"
+        return _ok(f"成功恢复图层状态: {name}")
     except Exception as e:
-        return _format_error("恢复图层状态", e)
+        return _err("恢复图层状态", e)
 
 
 # ==========================================
@@ -5301,32 +5474,32 @@ def restore_layer_state(name: str) -> str:
 # ==========================================
 
 @mcp.tool
-def move_entity_to_top(object_type: str, property_name: str, property_value: str) -> str:
+def move_entity_to_top(object_type: str, property_name: str, property_value: str,
+                       handle: str = None) -> str:
     """
     将实体移动到绘制顺序的顶部
 
     参数:
     - object_type/property_name/property_value: 定位对象
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到对象"
+            return _ok("未找到对象", found=False)
         st = zcad_conn.doc.Database.SortentsTable \
             if hasattr(zcad_conn.doc.Database, 'SortentsTable') else None
         if st is None:
-            return "绘制顺序表不可用（此文文件内可能使用了DrawOrderTable）"
+            return _ok("绘制顺序表不可用（此文文件内可能使用了DrawOrderTable）")
         st.MoveToTop([obj])
-        return "成功移动实体到顶部"
+        return _ok("成功移动实体到顶部")
     except Exception as e:
-        return _format_error("绘制顺序", e)
+        return _err("绘制顺序", e)
 
 
 # ==========================================
@@ -5347,9 +5520,9 @@ def zoom_scaled(scale: float = 1.0, scale_type: int = 0) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.app.ZoomScaled(scale, scale_type)
-        return f"成功执行 ZoomScaled: scale={scale}, type={scale_type}"
+        return _ok(f"成功执行 ZoomScaled: scale={scale}, type={scale_type}")
     except Exception as e:
-        return _format_error("ZoomScaled", e)
+        return _err("ZoomScaled", e)
 
 
 @mcp.tool
@@ -5362,9 +5535,9 @@ def zoom_previous() -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.app.ZoomPrevious()
-        return "成功执行 ZoomPrevious"
+        return _ok("成功执行 ZoomPrevious")
     except Exception as e:
-        return _format_error("ZoomPrevious", e)
+        return _err("ZoomPrevious", e)
 
 
 @mcp.tool
@@ -5380,9 +5553,9 @@ def eval_lisp(expression: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         result = zcad_conn.app.Eval(expression)
-        return f"LISP执行结果: {result}"
+        return _ok("获取成功", result=result)
     except Exception as e:
-        return _format_error("执行LISP", e)
+        return _err("执行LISP", e)
 
 
 @mcp.tool
@@ -5398,9 +5571,9 @@ def get_zcad_state() -> str:
         info = {}
         if hasattr(state, 'IsQuiescent'):
             info['is_quiescent'] = state.IsQuiescent
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("获取状态", e)
+        return _err("获取状态", e)
 
 
 # ==========================================
@@ -5408,24 +5581,24 @@ def get_zcad_state() -> str:
 # ==========================================
 
 @mcp.tool
-def get_solid_properties(object_type: str, property_name: str, property_value: str) -> str:
+def get_solid_properties(object_type: str, property_name: str, property_value: str,
+                         handle: str = None) -> str:
     """
     获取3D实体的属性（体积、质心等）
 
     参数:
     - object_type/property_name/property_value: 定位3D实体
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON格式的实体属性
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到3D实体"
+            return _ok("未找到3D实体", found=False)
         info = {}
         for prop in ['Volume', 'SolidType']:
             if hasattr(obj, prop):
@@ -5443,9 +5616,9 @@ def get_solid_properties(object_type: str, property_name: str, property_value: s
                 info['moment_of_inertia'] = list(obj.MomentOfInertia)
             except Exception:
                 pass
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("获取3D实体属性", e)
+        return _err("获取3D实体属性", e)
 
 
 # ==========================================
@@ -5453,24 +5626,24 @@ def get_solid_properties(object_type: str, property_name: str, property_value: s
 # ==========================================
 
 @mcp.tool
-def get_region_properties(object_type: str, property_name: str, property_value: str) -> str:
+def get_region_properties(object_type: str, property_name: str, property_value: str,
+                          handle: str = None) -> str:
     """
     获取区域对象的属性（面积、周长、质心等）
 
     参数:
     - object_type/property_name/property_value: 定位区域对象
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON格式的区域属性
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("Region", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="Region",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到区域对象"
+            return _ok("未找到区域对象", found=False)
         info = {}
         for prop in ['Area', 'Perimeter']:
             if hasattr(obj, prop):
@@ -5483,9 +5656,9 @@ def get_region_properties(object_type: str, property_name: str, property_value: 
                 info['centroid'] = list(obj.Centroid)
             except Exception:
                 pass
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("获取区域属性", e)
+        return _err("获取区域属性", e)
 
 
 # ==========================================
@@ -5519,36 +5692,41 @@ def attach_xref(path_name: str, name: str,
             path_name, name, point, x_scale, y_scale, z_scale, rotation, overlay
         )
         xref.Layer = layer
-        return f"成功附着外部参照: '{name}' ({path_name})"
+        return _ok(
+            f"成功附着外部参照: '{name}' ({path_name})",
+            handle=xref.Handle,
+            layer=layer,
+            xref_name=name,
+        )
     except Exception as e:
-        return _format_error("附着外部参照", e)
+        return _err("附着外部参照", e)
 
 
 @mcp.tool
 def bind_xref(object_type: str, property_name: str, property_value: str,
-              prefix_name: bool = True) -> str:
+              prefix_name: bool = True,
+              handle: str = None) -> str:
     """
     绑定外部参照到当前文档
 
     参数:
     - object_type/property_name/property_value: 定位外部参照对象
     - prefix_name: 是否保留名称前缀
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one("ExternalReference", predicate=pred)
+        obj = _find_entity(zcad_conn, object_type="ExternalReference",
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到外部参照"
+            return _ok("未找到外部参照", found=False)
         obj.Bind(prefix_name)
-        return "成功绑定外部参照"
+        return _ok("成功绑定外部参照")
     except Exception as e:
-        return _format_error("绑定外部参照", e)
+        return _err("绑定外部参照", e)
 
 
 # ==========================================
@@ -5576,9 +5754,9 @@ def add_raster(image_path: str, x: float = 0, y: float = 0, z: float = 0,
         point = APoint(x, y, z)
         raster = zcad_conn.model.AddRaster(image_path, point, scale_factor, rotation)
         raster.Layer = layer
-        return f"成功添加光栅图像: {image_path}"
+        return _ok(f"成功添加光栅图像: {image_path}", handle=raster.Handle, layer=layer, path=image_path)
     except Exception as e:
-        return _format_error("添加光栅图像", e)
+        return _err("添加光栅图像", e)
 
 
 # ==========================================
@@ -5619,9 +5797,9 @@ def set_textstyle_properties(name: str,
             ts.Width = width; updated.append(f"Width={width}")
         if oblique_angle is not None:
             ts.ObliqueAngle = oblique_angle; updated.append(f"Oblique={oblique_angle}")
-        return f"成功修改文字样式 '{name}': {', '.join(updated)}" if updated else "未提供修改参数"
+        return _ok(f"成功修改文字样式 '{name}': {', '.join(updated)}", name=name) if updated else _ok("未提供修改参数", updated=False)
     except Exception as e:
-        return _format_error("修改文字样式", e)
+        return _err("修改文字样式", e)
 
 
 # ==========================================
@@ -5629,24 +5807,24 @@ def set_textstyle_properties(name: str,
 # ==========================================
 
 @mcp.tool
-def get_entity_objectid(object_type: str, property_name: str, property_value: str) -> str:
+def get_entity_objectid(object_type: str, property_name: str, property_value: str,
+                        handle: str = None) -> str:
     """
     获取实体的Handle和ObjectID
 
     参数:
     - object_type/property_name/property_value: 定位实体
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: JSON格式的实体标识信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到实体"
+            return _ok("未找到实体", found=False)
         info = {"object_name": obj.ObjectName}
         if hasattr(obj, 'Handle'):
             info['handle'] = obj.Handle
@@ -5654,9 +5832,9 @@ def get_entity_objectid(object_type: str, property_name: str, property_value: st
             info['object_id'] = str(obj.ObjectID)
         if hasattr(obj, 'OwnerID'):
             info['owner_id'] = str(obj.OwnerID)
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("获取实体标识", e)
+        return _err("获取实体标识", e)
 
 
 @mcp.tool
@@ -5673,7 +5851,7 @@ def get_object_by_handle(handle: str) -> str:
         zcad_conn, _ = get_cad_connection()
         obj = zcad_conn.doc.Database.HandleToObject(handle)
         if not obj:
-            return f"未找到句柄 {handle} 对应的实体"
+            return _ok(f"未找到句柄 {handle} 对应的实体", found=False)
         info = {"found": True, "object_name": obj.ObjectName, "handle": handle}
         common_props = ['Layer', 'Color', 'Linetype', 'LinetypeScale',
                         'Lineweight', 'Visible']
@@ -5688,9 +5866,9 @@ def get_object_by_handle(handle: str) -> str:
             info['bounding_box'] = {'min': list(min_pt), 'max': list(max_pt)}
         except Exception:
             pass
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("句柄查找实体", e)
+        return _err("句柄查找实体", e)
 
 
 # ==========================================
@@ -5709,9 +5887,9 @@ def list_dictionaries() -> str:
         dicts = []
         for d in zcad_conn.doc.Dictionaries:
             dicts.append({"name": d.Name, "count": d.Count})
-        return json.dumps(dicts, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=dicts)
     except Exception as e:
-        return f"获取字典列表失败: {str(e)}"
+        return _err("获取字典列表", e)
 
 
 @mcp.tool
@@ -5727,9 +5905,9 @@ def add_dictionary(name: str) -> str:
     try:
         zcad_conn, _ = get_cad_connection()
         zcad_conn.doc.Dictionaries.Add(name)
-        return f"成功创建字典: {name}"
+        return _ok(f"成功创建字典: {name}")
     except Exception as e:
-        return _format_error("创建字典", e)
+        return _err("创建字典", e)
 
 
 @mcp.tool
@@ -5751,9 +5929,9 @@ def add_xrecord(dict_name: str, xrecord_name: str,
         d = zcad_conn.doc.Dictionaries.Item(dict_name)
         xrec = d.AddXRecord(xrecord_name)
         xrec.SetXRecordData(data_type, data_value)
-        return f"成功添加XRecord: '{xrecord_name}' 到字典 '{dict_name}'"
+        return _ok(f"成功添加XRecord: '{xrecord_name}' 到字典 '{dict_name}'")
     except Exception as e:
-        return _format_error("添加XRecord", e)
+        return _err("添加XRecord", e)
 
 
 # ==========================================
@@ -5824,9 +6002,9 @@ def get_preferences() -> str:
                 if hasattr(up, p):
                     try: info['user'][p.lower()] = getattr(up, p)
                     except Exception: pass
-        return json.dumps(info, ensure_ascii=False, indent=2, default=str)
+        return _ok("获取成功", data=info)
     except Exception as e:
-        return _format_error("获取首选项", e)
+        return _err("获取首选项", e)
 
 
 @mcp.tool
@@ -5846,11 +6024,11 @@ def set_preference(category: str, name: str, value) -> str:
         prefs = zcad_conn.app.Preferences
         cat_obj = getattr(prefs, category)
         if not cat_obj:
-            return f"未找到首选项类别: {category}"
+            return _ok(f"未找到首选项类别: {category}", found=False)
         setattr(cat_obj, name, value)
-        return f"成功设置首选项: {category}.{name} = {value}"
+        return _ok(f"成功设置首选项: {category}.{name} = {value}")
     except Exception as e:
-        return _format_error("设置首选项", e)
+        return _err("设置首选项", e)
 
 
 # ==========================================
@@ -5873,9 +6051,9 @@ def list_materials() -> str:
                 try: info['description'] = m.Description
                 except Exception: pass
             mats.append(info)
-        return json.dumps(mats, ensure_ascii=False, indent=2)
+        return _ok("获取成功", data=mats)
     except Exception as e:
-        return f"获取材质列表失败: {str(e)}"
+        return _err("获取材质列表", e)
 
 
 @mcp.tool
@@ -5894,9 +6072,9 @@ def add_material(name: str, description: str = "") -> str:
         mat = zcad_conn.doc.Materials.Add(name)
         if description:
             mat.Description = description
-        return f"成功创建材质: {name}"
+        return _ok(f"成功创建材质: {name}")
     except Exception as e:
-        return _format_error("创建材质", e)
+        return _err("创建材质", e)
 
 
 # ==========================================
@@ -5905,7 +6083,8 @@ def add_material(name: str, description: str = "") -> str:
 
 @mcp.tool
 def add_hyperlink(object_type: str, property_name: str, property_value: str,
-                  url: str, description: str = "") -> str:
+                  url: str, description: str = "",
+                  handle: str = None) -> str:
     """
     向实体添加超链接
 
@@ -5913,24 +6092,23 @@ def add_hyperlink(object_type: str, property_name: str, property_value: str,
     - object_type/property_name/property_value: 定位实体
     - url: 超链接URL
     - description: 链接描述文字
+    - handle: 实体句柄（可选，优先于属性定位）
 
     返回: 操作结果信息
     """
     try:
         zcad_conn, _ = get_cad_connection()
-        def pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
-            return False
-        obj = zcad_conn.find_one(object_type, predicate=pred)
+        obj = _find_entity(zcad_conn, object_type=object_type,
+                           property_name=property_name, property_value=property_value,
+                           handle=handle)
         if not obj:
-            return "未找到实体"
+            return _ok("未找到实体", found=False)
         hl = obj.Hyperlinks.Add(url)
         if description and hasattr(hl, 'URLDescription'):
             hl.URLDescription = description
-        return f"成功添加超链接: {url}"
+        return _ok(f"成功添加超链接: {url}")
     except Exception as e:
-        return _format_error("添加超链接", e)
+        return _err("添加超链接", e)
 
 
 # ==========================================
