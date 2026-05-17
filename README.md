@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
 ## 系统要求
 
 - **操作系统**: Windows 10/11
-- **CAD 软件**: [中望机械CAD 2027](https://www.zwsoft.com/product/zwcad/mfg) 已安装并运行
+- **CAD 软件**: [中望机械CAD 2026](https://www.zwsoft.com/product/zwcad/mfg) 已安装并运行
 - **Python**: 3.9+
 
 ## 快速开始
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 
 ### 2. 启动中望机械CAD
 
-确保中望机械CAD 2027 已启动并打开了一个 DWG 文件。
+确保中望机械CAD 2026 已启动并打开了一个 DWG 文件。
 
 ### 3. 启动 MCP Server
 
