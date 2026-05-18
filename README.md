@@ -307,6 +307,8 @@ A ZWCAD Mechanical automation MCP server built with [FastMCP](https://github.com
 
 https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
 
+https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
+
 ## Feature Overview
 
 | Category | Tools | Description |
@@ -560,3 +562,9 @@ AI Client (Cursor/Claude/Qoder)
 ## License
 
 MIT License - See [LICENSE](LICENSE)
+
+
+
+
+
+
