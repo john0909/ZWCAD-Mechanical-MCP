@@ -10,6 +10,9 @@
 
 https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
 
+绘制渐开线直齿圆柱齿轮示例：
+https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
+
 ## 功能概览
 
 | 分类 | 工具数 | 说明 |
@@ -307,6 +310,7 @@ A ZWCAD Mechanical automation MCP server built with [FastMCP](https://github.com
 
 https://github.com/user-attachments/assets/827604ac-3e79-47f8-8655-71bd306c33cb
 
+create 3d solid
 https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 
 ## Feature Overview
