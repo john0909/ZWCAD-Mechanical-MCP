@@ -1565,54 +1565,6 @@ def manage_block(action: str, name: str = None, params: dict = None,
         return _err(f"图块管理({action})", e)
 
 
-# ============================================================
-# 系统/应用工具（保留为独立工具）
-# ============================================================
-
-@mcp.tool
-def send_command(command: str) -> str:
-    """
-    向 ZWCAD 发送命令字符串（通用命令接口）。
-    使用send_command发送命令时，最后一条命令后需追加发送一个回车符"\\n"。
-
-    参数:
-    - command: 命令字符串
-
-    常用命令示例:
-    - 重生成视口: "_REGEN\\n"
-    - 清理全部: "_PURGE\\n_ALL\\n\\n_Y\\n"
-    - 撤销标记开始: "UNDO\\nBEGIN\\n"  结束: "UNDO\\nEND\\n"
-    - 外部参照: "_XREF\\n"
-    - 光栅图像: "_IMAGEATTACH\\n"
-    - 坐标转换: 使用 LISP 表达式
-    - 材质管理: "_MATERIALS\\n"
-    - 绘制顺序: "_DRAWORDER\\n"
-    - 执行LISP: 直接发送LISP表达式如 "(command \\"LINE\\" \\"0,0\\" \\"10,10\\" \\"\\")"
-    """
-    try:
-        zcad_conn, _ = get_cad_connection()
-        zcad_conn.doc.SendCommand(command)
-        return _ok(f"命令发送成功: {command}", command=command)
-    except Exception as e:
-        return _err("发送命令", e)
-
-
-@mcp.tool
-def send_prompt(text: str) -> str:
-    """
-    在 ZWCAD 命令行显示提示文本
-
-    参数:
-    - text: 要显示的文本内容
-    """
-    try:
-        zcad_conn, _ = get_cad_connection()
-        zcad_conn.prompt(text)
-        return _ok(f"成功发送提示文本: {text}")
-    except Exception as e:
-        return _err("发送提示", e)
-
-
 @mcp.tool
 def get_variable(name: str) -> str:
     """
@@ -1989,23 +1941,6 @@ def get_mech_info(info_type: str) -> str:
         return _err("获取信息", ValueError(f"不支持的信息类型: {info_type}"))
     except Exception as e:
         return _err(f"获取机械信息({info_type})", e)
-
-
-@mcp.tool
-def send_mech_command(cmd: str) -> str:
-    """
-    向中望机械模块发送命令（自动追加换行符）
-
-    参数:
-    - cmd: 命令字符串
-    """
-    try:
-        _, mech_conn = get_cad_connection()
-        real_cmd = cmd if cmd.endswith("\n") else cmd + "\n"
-        mech_conn.zwm_app.send_command(real_cmd)
-        return _ok(f"命令发送成功: {cmd}", command=cmd)
-    except Exception as e:
-        return _err("发送机械命令", e)
 
 
 @mcp.tool

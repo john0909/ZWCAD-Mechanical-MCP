@@ -33,9 +33,9 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 图框 | 2 | `manage_frame`、`create_frame` |
 | 明细表 | 1 | `manage_bom` |
 | 机械数据库 | 1 | `manage_mech_db` |
-| 机械应用 | 5 | `get_mech_info`、`send_mech_command`、`mech_doc`、`cad_environment_init`、`get_balloon` |
+| 机械应用 | 5 | `get_mech_info`、`mech_doc`、`cad_environment_init`、`get_balloon` |
 
-**共计 33 个工具**（由 100 个原子工具通过 dispatch 模式合并优化，减少 67% LLM 上下文占用）
+**共计 30 个工具**（由 100 个原子工具通过 dispatch 模式合并优化，减少 67% LLM 上下文占用）
 
 ## 系统要求
 
@@ -213,23 +213,10 @@ start.bat
 | 工具 | 说明 |
 |------|------|
 | `get_mech_info` | 获取机械模块信息（info_type: `version`, `cad_path`, `zwm_path`, `style_path`, `about`） |
-| `send_mech_command` | 发送机械模块命令 |
 | `mech_doc` | 机械文档操作（action: `open`, `new`, `new_named`） |
 | `cad_environment_init` | 初始化CAD环境标准 |
 | `get_balloon` | 获取球标对象 |
 
-### 通过 send_command 实现的低频操作
-
-以下操作不再有独立工具，可通过 `send_command` 实现：
-
-| 操作 | 命令示例 |
-|------|----------|
-| 重生成视口 | `send_command(command="_REGEN\n")` |
-| 清理全部 | `send_command(command="_PURGE\n_ALL\n\n_Y\n")` |
-| 撤销标记 | `send_command(command="UNDO\nBEGIN\n")` |
-| 外部参照 | `send_command(command="_XREF\n")` |
-| 材质管理 | `send_command(command="_MATERIALS\n")` |
-| 执行LISP | `send_command(command="(command \"LINE\" \"0,0\" \"10,10\" \"\")")` |
 
 ## 示例：通过 AI 创建图框
 
@@ -333,9 +320,9 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | Frame | 2 | `manage_frame`, `create_frame` |
 | BOM | 1 | `manage_bom` |
 | Mech Database | 1 | `manage_mech_db` |
-| Mech Application | 5 | `get_mech_info`, `send_mech_command`, `mech_doc`, `cad_environment_init`, `get_balloon` |
+| Mech Application | 5 | `get_mech_info`,  `mech_doc`, `cad_environment_init`, `get_balloon` |
 
-**Total: 33 tools** (consolidated from 100 atomic tools via dispatch pattern, reducing LLM context usage by 67%)
+**Total: 30 tools** (consolidated from 100 atomic tools via dispatch pattern, reducing LLM context usage by 67%)
 
 ## Requirements
 
@@ -497,7 +484,6 @@ Refer to `mcp-config.json` for configuration.
 |------|-------------|
 | `manage_mech_db` | Mechanical database open/save/close |
 | `get_mech_info` | Get mech module info (version, paths, about) |
-| `send_mech_command` | Send command to mechanical module |
 | `mech_doc` | Mechanical document open/new operations |
 | `cad_environment_init` | Initialize CAD standard environment |
 | `get_balloon` | Get balloon object for part numbering |
