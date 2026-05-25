@@ -2116,4 +2116,4 @@ if __name__ == "__main__":
     logger.info("ZWCAD Mechanical MCP Server 启动中...")
     logger.info("=" * 60)
     logger.info("服务器已就绪，等待客户端连接...")
-    mcp.run()
+    mcp.run(transport="stdio", show_banner=False)
