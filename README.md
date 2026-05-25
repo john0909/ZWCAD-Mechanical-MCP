@@ -4,7 +4,7 @@
 
 ---
 
-基于 [FastMCP](https://github.com/jlowin/fastmcp) 框架的中望机械CAD自动化 MCP 服务，让 AI 模型（如 DeepSeek, Qwen, GLM, Kimi 等）可以通过 MCP 协议直接操控中望机械CAD完成绘图、编辑标题栏、管理图框和明细表等操作。
+中望机械CAD自动化 MCP 服务，让 AI 模型（如 DeepSeek, Qwen, GLM, Kimi 等）可以通过 MCP 协议直接操控中望机械CAD完成绘图、编辑标题栏、管理图框和明细表等操作。
 
 ## 演示视频
 
@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 机械数据库 | 1 | `manage_mech_db` |
 | 机械应用 | 5 | `get_mech_info`、`mech_doc`、`cad_environment_init`、`get_balloon` |
 
-**共计 30 个工具**（由 100 个原子工具通过 dispatch 模式合并优化，减少 67% LLM 上下文占用）
+**共计 30 个工具**
 
 ## 系统要求
 
