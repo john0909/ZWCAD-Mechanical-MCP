@@ -887,6 +887,8 @@ def modify_entity(entity_type: str, params: dict,
         if not obj:
             return _ok(f"未找到符合条件的{entity_type}", found=False)
         updated = modify_fn(zcad_conn, obj, params)
+        if updated and hasattr(obj, 'Update'):
+            obj.Update()
         return _ok(f"成功修改{entity_type}: {', '.join(updated)}") if updated else _ok("未提供修改参数")
     except Exception as e:
         return _err(f"修改{entity_type}", e)
