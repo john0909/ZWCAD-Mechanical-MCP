@@ -927,23 +927,21 @@ def get_entity_info(handle: str = None, object_type: str = None,
 
         for prop in ['Layer', 'Color', 'Linetype', 'LinetypeScale',
                       'Lineweight', 'Visible']:
-            if hasattr(obj, prop):
-                try:
-                    info[prop] = getattr(obj, prop)
-                except Exception:
-                    pass
+            try:
+                info[prop] = getattr(obj, prop)
+            except Exception:
+                pass
 
         geo_props = ['StartPoint', 'EndPoint', 'Center', 'Radius',
                      'StartAngle', 'EndAngle', 'Area', 'Length',
                      'TextString', 'Height', 'Rotation', 'InsertionPoint',
                      'Normal', 'Closed']
         for prop in geo_props:
-            if hasattr(obj, prop):
-                try:
-                    val = getattr(obj, prop)
-                    info[prop] = list(val) if hasattr(val, '__iter__') and not isinstance(val, str) else val
-                except Exception:
-                    pass
+            try:
+                val = getattr(obj, prop)
+                info[prop] = list(val) if hasattr(val, '__iter__') and not isinstance(val, str) else val
+            except Exception:
+                pass
 
         try:
             min_pt, max_pt = obj.GetBoundingBox()
