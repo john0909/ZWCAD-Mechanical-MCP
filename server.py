@@ -34,7 +34,6 @@ mcp = FastMCP(name="ZWCAD Mechanical Drawing Server")
 
 STYLES_BASE_PATH = r"C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles"
 
-
 def _parse_xml_file(file_path):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"XML 文件不存在: {file_path}")
@@ -1426,6 +1425,58 @@ def manage_table(action: str, params: dict,
         return _err(f"表格操作({action})", e)
 
 
+def _ensure_selection_set(zcad_conn, name="SS1"):
+    try:
+        old = zcad_conn.doc.SelectionSets.Item(name)
+        old.Delete()
+    except Exception:
+        pass
+    return zcad_conn.doc.SelectionSets.Add(name)
+
+
+def _selection_set_items(sel, max_items=200):
+    items = []
+    for i in range(min(sel.Count, max_items)):
+        obj = sel.Item(i)
+        info = {"object_name": obj.ObjectName}
+        if hasattr(obj, 'Handle'):
+            info['handle'] = obj.Handle
+        if hasattr(obj, 'Layer'):
+            info['layer'] = obj.Layer
+        items.append(info)
+    return items
+
+
+def _build_filter(filter_criteria):
+    if not filter_criteria:
+        return None, None
+    type_codes = []
+    type_values = []
+    if "entity_type" in filter_criteria:
+        type_codes.append(0)
+        type_values.append(filter_criteria["entity_type"])
+    if "layer" in filter_criteria:
+        type_codes.append(8)
+        type_values.append(filter_criteria["layer"])
+    if "color" in filter_criteria:
+        type_codes.append(62)
+        type_values.append(filter_criteria["color"])
+    if not type_codes:
+        return None, None
+    return aInt(type_codes), tuple(type_values)
+
+
+def _read_pickfirst_selection(zcad_conn, max_items=2000000):
+    """读取 CAD 界面中用户当前选中的实体（Pickfirst 选择集）。"""
+    try:
+        sel = zcad_conn.doc.PickfirstSelectionSet
+        count = sel.Count
+        items = _selection_set_items(sel, max_items) if count else []
+        return count, items
+    except Exception:
+        return 0, []
+
+
 @mcp.tool
 def select_entities(action: str, params: dict = None) -> str:
     """
@@ -1433,12 +1484,18 @@ def select_entities(action: str, params: dict = None) -> str:
 
     参数:
     - action: 操作类型，可选值:
-      "select" - 选择对象: params需要 {mode} (name,x1,y1,x2,y2可选)
-        mode: 0=Window, 1=Crossing, 2=Previous, 4=Last, 5=All
-      "on_screen" - 交互屏幕选择: params可含 {name}
-      "by_polygon" - 多边形选择: params需要 {mode,points} (name可选)
+      "select" - 选择对象: params需要 {mode}
+        mode 0(Window) 或 1(Crossing) 时还需要 {x1,y1,x2,y2}
+        mode 2(Previous)、4(Last)、5(All) 时不需要坐标
+        可选: {name, filter: {entity_type, layer, color}, return_items: bool}
+      "by_polygon" - 多边形选择: params需要 {mode, points}
         mode: 0=Fence, 1=WindowPolygon, 2=CrossingPolygon
+        可选: {name, filter: {entity_type, layer, color}, return_items: bool}
+      "get_items" - 获取程序化选择集中的实体列表: params可含 {name, max_items}
+      "get_picked" - 获取当前 DWG 中用户已选中的实体（界面高亮选择）: params可含 {max_items}
+      "list" - 列出所有选择集
       "clear" - 清空选择集: params可含 {name}
+      "delete" - 删除选择集: params可含 {name}
     - params: 操作参数
     """
     try:
@@ -1446,48 +1503,97 @@ def select_entities(action: str, params: dict = None) -> str:
         p = params or {}
 
         if action == "select":
+            mode = p["mode"]
             sel_name = p.get("name", "SS1")
-            try:
-                old = zcad_conn.doc.SelectionSets.Item(sel_name)
-                old.Delete()
-            except Exception:
-                pass
-            sel = zcad_conn.doc.SelectionSets.Add(sel_name)
-            p1 = APoint(p.get("x1", 0), p.get("y1", 0), 0)
-            p2 = APoint(p.get("x2", 0), p.get("y2", 0), 0)
-            sel.Select(p["mode"], p1, p2)
-            return _ok(f"成功选择对象 (模式={p['mode']}), 选择集: {sel_name}, 数量: {sel.Count}")
+            sel = _ensure_selection_set(zcad_conn, sel_name)
 
-        elif action == "on_screen":
-            sel_name = p.get("name", "SS1")
-            try:
-                old = zcad_conn.doc.SelectionSets.Item(sel_name)
-                old.Delete()
-            except Exception:
-                pass
-            sel = zcad_conn.doc.SelectionSets.Add(sel_name)
-            zcad_conn.prompt("请在屏幕上选择对象，按Enter确认...")
-            sel.SelectOnScreen()
-            return _ok(f"屏幕选择完成, 选择集: {sel_name}, 数量: {sel.Count}")
+            filter_type, filter_data = _build_filter(p.get("filter"))
+
+            if mode in (0, 1):
+                for key in ("x1", "y1", "x2", "y2"):
+                    if key not in p:
+                        return _err("选择集操作",
+                                    ValueError(f"Window/Crossing 模式必须提供 x1,y1,x2,y2，缺少: {key}"))
+                p1 = APoint(p["x1"], p["y1"], 0)
+                p2 = APoint(p["x2"], p["y2"], 0)
+                if filter_type is not None:
+                    sel.Select(mode, p1, p2, filter_type, filter_data)
+                else:
+                    sel.Select(mode, p1, p2)
+            else:
+                if filter_type is not None:
+                    sel.Select(mode, None, None, filter_type, filter_data)
+                else:
+                    sel.Select(mode)
+
+            result = {"count": sel.Count}
+            if p.get("return_items", True):
+                result["items"] = _selection_set_items(sel)
+            return _ok(
+                f"成功选择对象 (模式={mode}), 选择集: {sel_name}, 数量: {sel.Count}",
+                **result
+            )
 
         elif action == "by_polygon":
             sel_name = p.get("name", "SS1")
-            try:
-                old = zcad_conn.doc.SelectionSets.Item(sel_name)
-                old.Delete()
-            except Exception:
-                pass
-            sel = zcad_conn.doc.SelectionSets.Add(sel_name)
+            sel = _ensure_selection_set(zcad_conn, sel_name)
             flat = _flatten_points(p["points"])
             coords = aDouble(*flat)
-            sel.SelectByPolygon(p["mode"], coords)
-            return _ok(f"多边形选择完成, 选择集: {sel_name}, 数量: {sel.Count}")
+
+            filter_type, filter_data = _build_filter(p.get("filter"))
+            if filter_type is not None:
+                sel.SelectByPolygon(p["mode"], coords, filter_type, filter_data)
+            else:
+                sel.SelectByPolygon(p["mode"], coords)
+
+            result = {"count": sel.Count}
+            if p.get("return_items", True):
+                result["items"] = _selection_set_items(sel)
+            return _ok(
+                f"多边形选择完成, 选择集: {sel_name}, 数量: {sel.Count}",
+                **result
+            )
+
+        elif action == "get_items":
+            sel_name = p.get("name", "SS1")
+            try:
+                sel = zcad_conn.doc.SelectionSets.Item(sel_name)
+            except Exception:
+                return _ok(f"选择集 '{sel_name}' 不存在", found=False)
+            max_items = p.get("max_items", 200)
+            items = _selection_set_items(sel, max_items)
+            return _ok("获取成功", count=sel.Count, items=items)
+
+        elif action == "get_picked":
+            max_items = p.get("max_items", 200)
+            count, items = _read_pickfirst_selection(zcad_conn, max_items)
+            if count == 0:
+                return _ok("当前没有选中的实体", found=False, count=0, items=[])
+            return _ok(f"获取当前选中实体成功, 数量: {count}", count=count, items=items)
+
+        elif action == "list":
+            sets = []
+            for ss in zcad_conn.doc.SelectionSets:
+                sets.append({"name": ss.Name, "count": ss.Count})
+            return _ok("获取选择集列表成功", data=sets)
 
         elif action == "clear":
             sel_name = p.get("name", "SS1")
-            sel = zcad_conn.doc.SelectionSets.Item(sel_name)
-            sel.Clear()
-            return _ok(f"已清空选择集: {sel_name}")
+            try:
+                sel = zcad_conn.doc.SelectionSets.Item(sel_name)
+                sel.Clear()
+                return _ok(f"已清空选择集: {sel_name}")
+            except Exception:
+                return _ok(f"选择集 '{sel_name}' 不存在", found=False)
+
+        elif action == "delete":
+            sel_name = p.get("name", "SS1")
+            try:
+                sel = zcad_conn.doc.SelectionSets.Item(sel_name)
+                sel.Delete()
+                return _ok(f"已删除选择集: {sel_name}")
+            except Exception:
+                return _ok(f"选择集 '{sel_name}' 不存在", found=False)
 
         return _err("选择集操作", ValueError(f"不支持的操作: {action}"))
     except Exception as e:
