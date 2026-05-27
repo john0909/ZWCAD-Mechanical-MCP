@@ -10,8 +10,7 @@
         "find_object",
         "get_objects_in_model",
         "get_variable",
-        "get_application_info",
-        "get_mech_info",
+        "get_app_info",
         "get_balloon"
       ]
     }
