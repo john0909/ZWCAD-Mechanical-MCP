@@ -1,11 +1,19 @@
-{
+﻿{
   "mcpServers": {
     "zwcadmech": {
       "command": "python",
       "args": ["server.py"],
       "env": {},
       "disabled": false,
-      "autoApprove": []
+      "autoApprove": [
+        "get_entity_info",
+        "find_object",
+        "get_objects_in_model",
+        "get_variable",
+        "get_application_info",
+        "get_mech_info",
+        "get_balloon"
+      ]
     }
   }
 }

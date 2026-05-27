@@ -1,4 +1,4 @@
-# ZWCAD机械版 MCP Server
+﻿# ZWCAD机械版 MCP Server
 
 [中文](#zwcad-mechanical-mcp-server) | [English](#english)
 
@@ -28,12 +28,12 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 表格操作 | 1 | `manage_table` |
 | 选择集 | 1 | `select_entities` |
 | 图块管理 | 1 | `manage_block` |
-| 系统工具 | 5 | `send_command`、`send_prompt`、`get_variable`、`set_variable`、`get_application_info` |
+| 系统工具 | 3 | `get_variable`、`set_variable`、`get_application_info` |
 | 标题栏 | 1 | `manage_title_block` |
 | 图框 | 2 | `manage_frame`、`create_frame` |
 | 明细表 | 1 | `manage_bom` |
 | 机械数据库 | 1 | `manage_mech_db` |
-| 机械应用 | 5 | `get_mech_info`、`mech_doc`、`cad_environment_init`、`get_balloon` |
+| 机械应用 | 4 | `get_mech_info`、`mech_doc`、`cad_environment_init`、`get_balloon` |
 
 **共计 30 个工具**
 
@@ -165,7 +165,7 @@ start.bat
 
 | 工具 | 说明 | action |
 |------|------|--------|
-| `select_entities` | 选择集操作 | `select`, `on_screen`, `by_polygon`, `clear` |
+| `select_entities` | 选择集操作 | `select`, `by_polygon`, `get_items`, `get_picked`, `list`, `clear`, `delete` |
 
 ### 图块管理
 
@@ -177,8 +177,6 @@ start.bat
 
 | 工具 | 说明 |
 |------|------|
-| `send_command` | 发送命令行命令（通用万能接口，低频操作均可通过此工具实现） |
-| `send_prompt` | 在命令行显示提示文本 |
 | `get_variable` | 获取系统变量值 |
 | `set_variable` | 设置系统变量值 |
 | `get_application_info` | 获取应用程序信息 |
@@ -240,7 +238,7 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server 主程序（33个合并工具）
+├── server.py                 # MCP Server 主程序（30个合并工具）
 ├── requirements.txt          # Python 依赖
 ├── mcp-config.json           # MCP 客户端配置示例
 ├── start.bat                 # Windows 一键启动
@@ -256,7 +254,7 @@ AI 客户端 (Cursor/Claude/Qoder)
         │
         │ MCP 协议 (STDIO)
         ▼
-   FastMCP Server (33 tools, dispatch pattern)
+   FastMCP Server (30 tools, dispatch pattern)
         │
         ├── pyzwcad ──────► ZWCAD COM API (基础绘图)
         │
@@ -315,12 +313,12 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | Table | 1 | `manage_table` |
 | Selection Set | 1 | `select_entities` |
 | Block Management | 1 | `manage_block` |
-| System | 5 | `send_command`, `send_prompt`, `get_variable`, `set_variable`, `get_application_info` |
+| System | 3 | `get_variable`, `set_variable`, `get_application_info` |
 | Title Block | 1 | `manage_title_block` |
 | Frame | 2 | `manage_frame`, `create_frame` |
 | BOM | 1 | `manage_bom` |
 | Mech Database | 1 | `manage_mech_db` |
-| Mech Application | 5 | `get_mech_info`,  `mech_doc`, `cad_environment_init`, `get_balloon` |
+| Mech Application | 4 | `get_mech_info`, `mech_doc`, `cad_environment_init`, `get_balloon` |
 
 **Total: 30 tools** (consolidated from 100 atomic tools via dispatch pattern, reducing LLM context usage by 67%)
 
@@ -454,8 +452,6 @@ Refer to `mcp-config.json` for configuration.
 
 | Tool | Description |
 |------|-------------|
-| `send_command` | Send command string to ZWCAD (universal fallback for any operation) |
-| `send_prompt` | Display text in ZWCAD command line |
 | `get_variable` / `set_variable` | Read/write system variables |
 | `get_application_info` | Get ZWCAD version, path, window info |
 
@@ -467,16 +463,16 @@ Refer to `mcp-config.json` for configuration.
 
 ### Frame
 
-| Tool | Description |
-|------|-------------|
-| `manage_frame` | Frame query/switch/update/refresh (actions: `list`, `get_info`, `switch`, `update`, `refresh`, etc.) |
-| `create_frame` | Create a new frame (auto-reads XML default style config) |
+| Tool | Description | action |
+|------|-------------|--------|
+| `manage_frame` | Frame query/switch/update/refresh | `list`, `get_info`, `get_count`, `get_name_by_index`, `get_name_by_point`, `get_next_name`, `switch`, `update`, `refresh` |
+| `create_frame` | Create a new frame (auto-reads XML default style config) | — |
 
 ### BOM (Bill of Materials)
 
 | Tool | Description | action |
 |------|-------------|--------|
-| `manage_bom` | BOM CRUD operations | `get_row_count`, `get_row`, `add_row`, `update_row`, `insert_row`, `delete_row`, `set_field`, `get_field`, `refresh` |
+| `manage_bom` | BOM CRUD operations | `get_row_count`, `get_row`, `add_row`, `update_row`, `insert_row`, `delete_row`, `set_field`, `get_field`, `get_field_count`, `refresh` |
 
 ### Mechanical Module
 
@@ -510,7 +506,7 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server main program (33 consolidated tools)
+├── server.py                 # MCP Server main program (30 consolidated tools)
 ├── requirements.txt          # Python dependencies
 ├── mcp-config.json           # MCP client configuration example
 ├── start.bat                 # Windows one-click launcher
@@ -526,7 +522,7 @@ AI Client (Cursor/Claude/Qoder)
         │
         │ MCP Protocol (STDIO)
         ▼
-   FastMCP Server (33 tools, dispatch pattern)
+   FastMCP Server (30 tools, dispatch pattern)
         │
         ├── pyzwcad ──────► ZWCAD COM API (basic drawing)
         │

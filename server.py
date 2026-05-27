@@ -2,8 +2,6 @@
 ZWCAD Mechanical MCP Server - 基于 FastMCP 的中望机械CAD自动化服务
 提供画直线、画圆、画弧、画椭圆、多段线、样条曲线、标注、图块、图层、
 标题栏编辑、图框切换、明细表操作等功能
-
-优化版：100 个工具合并为 ~28 个，减少 LLM 上下文占用
 """
 
 from fastmcp import FastMCP
