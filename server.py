@@ -1203,8 +1203,10 @@ def manage_style(style_type: str, action: str, name: str = None,
 
 @mcp.tool
 def manage_view(action: str, name: str = None, params: dict = None) -> str:
-    """管理布局和视图。action: list_layouts|get_active_layout|add_layout|set_active_layout|list_views|add_view。
-    add/set_active需要name参数。list_layouts的params可含{include_model:bool}。"""
+    """管理布局和视图。action: list_layouts|get_active_layout|add_layout|set_active_layout|list_views|add_view
+    |set_active_space|get_active_space。
+    add/set_active/需要name参数。
+    set_active_space的params:{space:"model"|"paper"}。"""
     try:
         zcad_conn, _ = get_cad_connection()
         p = params or {}
@@ -1247,6 +1249,21 @@ def manage_view(action: str, name: str = None, params: dict = None) -> str:
             zcad_conn.doc.Views.Add(name)
             return _ok(f"成功创建视图: {name}")
 
+        elif action == "set_active_space":
+            space = p["space"]
+            if space == "model":
+                zcad_conn.doc.ActiveSpace = 1
+            elif space == "paper":
+                zcad_conn.doc.ActiveSpace = 0
+            else:
+                return _err("视图管理", ValueError(f"不支持的空间类型: {space}，支持: model/paper"))
+            return _ok(f"成功切换到{'模型' if space == 'model' else '图纸'}空间")
+
+        elif action == "get_active_space":
+            space_val = zcad_conn.doc.ActiveSpace
+            space_name = "model" if space_val == 1 else "paper"
+            return _ok(data={"space": space_name, "value": space_val})
+
         return _err("视图管理", ValueError(f"不支持的操作: {action}"))
     except Exception as e:
         return _err(f"视图管理({action})", e)
@@ -1258,7 +1275,10 @@ def manage_document(action: str, params: dict = None) -> str:
     new(无需params) | save:{file_path} | close:{[save_changes]}
     info/list(无需params) | activate:{name}
     export:{filename,[extension]} | import:{filename,[x,y,z,scale_factor]}
-    plot:{plot_file,[plot_config]}"""
+    plot:{plot_file,[plot_config]}
+    regen:{[scope:0=AllViewports/1=ActiveViewport]}
+    send_command:{command} | start_undo/end_undo(无需params)
+    wblock:{file_name,[selection_set_name]}"""
     try:
         logger.info("tool_call manage_document action=%s", action)
         zcad_conn, _ = get_cad_connection()
@@ -1321,6 +1341,42 @@ def manage_document(action: str, params: dict = None) -> str:
         elif action == "plot":
             zcad_conn.doc.Plot.PlotToFile(p["plot_file"], p.get("plot_config", ""))
             return _ok(f"成功打印到文件: {p['plot_file']}")
+
+        elif action == "regen":
+            scope = p.get("scope", 0)
+            zcad_conn.doc.Regen(scope)
+            return _ok(f"重生成完成 (scope={scope})")
+
+        elif action == "send_command":
+            cmd = p["command"]
+            zcad_conn.doc.SendCommand(cmd)
+            return _ok(f"命令已发送: {cmd}")
+
+        elif action == "start_undo":
+            zcad_conn.doc.StartUndoMark()
+            return _ok("撤消组标记已开始")
+
+        elif action == "end_undo":
+            zcad_conn.doc.EndUndoMark()
+            return _ok("撤消组标记已结束")
+
+        elif action == "wblock":
+            file_name = p["file_name"]
+            sel_name = p.get("selection_set_name")
+            if sel_name:
+                sel = zcad_conn.doc.SelectionSets.Item(sel_name)
+                zcad_conn.doc.Wblock(file_name, sel)
+            else:
+                sel = _ensure_selection_set(zcad_conn, "__wblock_tmp__")
+                sel.Select(5)
+                try:
+                    zcad_conn.doc.Wblock(file_name, sel)
+                finally:
+                    try:
+                        sel.Delete()
+                    except Exception:
+                        pass
+            return _ok(f"成功写块到文件: {file_name}")
 
         return _err("文档管理", ValueError(f"不支持的操作: {action}"))
     except Exception as e:
@@ -2040,6 +2096,247 @@ def create_frame(
         )
     except Exception as e:
         return _err("创建图框", e)
+
+
+# ############################################################
+#                   字典 / XData / 工具方法
+# ############################################################
+
+
+@mcp.tool
+def manage_dictionary(action: str, params: dict = None) -> str:
+    """命名对象字典与XRecord管理。action及params:
+    list(无需params) — 列出所有顶层字典
+    add:{name} — 创建新字典
+    get_items:{name} — 获取字典内所有条目(keyword→ObjectName映射)
+    add_object:{dict_name,keyword,object_name} — 向字典添加对象
+    get_object:{dict_name,name} — 按名称获取条目
+    remove:{dict_name,name} — 删除条目
+    rename:{dict_name,old_name,new_name} — 重命名条目
+    add_xrecord:{dict_name,keyword} — 在字典中创建XRecord
+    get_xrecord:{dict_name,keyword} — 读取XRecord数据(返回types+values数组)
+    set_xrecord:{dict_name,keyword,data_types:[],data_values:[]} — 写入XRecord(types为DXF组码)
+    get_entity_dict:{handle} — 获取实体的扩展字典
+    has_entity_dict:{handle} — 检查实体是否有扩展字典"""
+    try:
+        logger.info("tool_call manage_dictionary action=%s", action)
+        zcad_conn, _ = get_cad_connection()
+        p = params or {}
+        dicts = zcad_conn.doc.Dictionaries
+
+        if action == "list":
+            result = []
+            for i in range(dicts.Count):
+                d = dicts.Item(i)
+                result.append({"name": d.Name, "count": d.Count})
+            return _ok(data=result)
+
+        elif action == "add":
+            new_dict = dicts.Add(p["name"])
+            return _ok(f"成功创建字典: {p['name']}", name=new_dict.Name)
+
+        elif action == "get_items":
+            d = dicts.Item(p["name"])
+            items = []
+            for i in range(d.Count):
+                obj = d.Item(i)
+                entry = {"index": i, "object_name": obj.ObjectName if hasattr(obj, 'ObjectName') else "Unknown"}
+                try:
+                    entry["keyword"] = d.GetName(obj)
+                except Exception:
+                    pass
+                if hasattr(obj, 'Handle'):
+                    entry["handle"] = obj.Handle
+                items.append(entry)
+            return _ok(data=items)
+
+        elif action == "add_object":
+            d = dicts.Item(p["dict_name"])
+            d.AddObject(p["keyword"], p["object_name"])
+            return _ok(f"成功向字典 '{p['dict_name']}' 添加对象: {p['keyword']}")
+
+        elif action == "get_object":
+            d = dicts.Item(p["dict_name"])
+            obj = d.GetObject(p["name"])
+            info = {"object_name": obj.ObjectName}
+            if hasattr(obj, 'Handle'):
+                info["handle"] = obj.Handle
+            if hasattr(obj, 'Name'):
+                info["name"] = obj.Name
+            return _ok(data=info)
+
+        elif action == "remove":
+            d = dicts.Item(p["dict_name"])
+            d.Remove(p["name"])
+            return _ok(f"成功从字典 '{p['dict_name']}' 删除条目: {p['name']}")
+
+        elif action == "rename":
+            d = dicts.Item(p["dict_name"])
+            d.Rename(p["old_name"], p["new_name"])
+            return _ok(f"成功重命名: '{p['old_name']}' → '{p['new_name']}'")
+
+        elif action == "add_xrecord":
+            d = dicts.Item(p["dict_name"])
+            d.AddXRecord(p["keyword"])
+            return _ok(f"成功在字典 '{p['dict_name']}' 中创建 XRecord: {p['keyword']}")
+
+        elif action == "get_xrecord":
+            d = dicts.Item(p["dict_name"])
+            xr = d.GetObject(p["keyword"])
+            types, values = xr.GetXRecordData()
+            type_list = list(types) if types else []
+            value_list = list(values) if values else []
+            return _ok(data={"types": type_list, "values": value_list})
+
+        elif action == "set_xrecord":
+            d = dicts.Item(p["dict_name"])
+            xr = d.GetObject(p["keyword"])
+            types_arr = aInt(p["data_types"])
+            values_tuple = tuple(p["data_values"])
+            xr.SetXRecordData(types_arr, values_tuple)
+            return _ok(f"成功写入 XRecord 数据 ({len(p['data_types'])} 项)")
+
+        elif action == "get_entity_dict":
+            obj = zcad_conn.doc.HandleToObject(p["handle"])
+            ext_dict = obj.GetExtensionDictionary()
+            items = []
+            for i in range(ext_dict.Count):
+                entry = ext_dict.Item(i)
+                item = {"index": i, "object_name": entry.ObjectName if hasattr(entry, 'ObjectName') else "Unknown"}
+                try:
+                    item["keyword"] = ext_dict.GetName(entry)
+                except Exception:
+                    pass
+                if hasattr(entry, 'Handle'):
+                    item["handle"] = entry.Handle
+                items.append(item)
+            return _ok(data={"handle": p["handle"], "dict_name": ext_dict.Name, "items": items})
+
+        elif action == "has_entity_dict":
+            obj = zcad_conn.doc.HandleToObject(p["handle"])
+            has_dict = bool(obj.HasExtensionDictionary)
+            return _ok(data={"handle": p["handle"], "has_extension_dictionary": has_dict})
+
+        return _err("字典管理", ValueError(f"不支持的操作: {action}"))
+    except Exception as e:
+        return _err(f"字典管理({action})", e)
+
+
+@mcp.tool
+def manage_xdata(action: str, params: dict = None) -> str:
+    """扩展数据(XData)管理。action及params:
+    list_apps(无需params) — 列出所有已注册应用程序名
+    register_app:{app_name} — 注册新应用程序名(写XData前必须先注册)
+    get_xdata:{handle,app_name} — 读取实体扩展数据(返回types+values)
+    set_xdata:{handle,data_types:[],data_values:[]} — 写入扩展数据
+      types[0]必须是1001(应用名标识),values[0]是已注册的app_name
+      常用类型码: 1000=字符串,1040=实数,1070=整数,1010=3D点
+    delete_xdata:{handle,app_name} — 删除实体上指定应用的扩展数据"""
+    try:
+        logger.info("tool_call manage_xdata action=%s", action)
+        zcad_conn, _ = get_cad_connection()
+        p = params or {}
+
+        if action == "list_apps":
+            apps = []
+            for app in zcad_conn.doc.RegisteredApplications:
+                apps.append({"name": app.Name})
+            return _ok(data=apps)
+
+        elif action == "register_app":
+            zcad_conn.doc.RegisteredApplications.Add(p["app_name"])
+            return _ok(f"成功注册应用程序: {p['app_name']}", app_name=p["app_name"])
+
+        elif action == "get_xdata":
+            obj = zcad_conn.doc.HandleToObject(p["handle"])
+            types, values = obj.GetXData(p["app_name"])
+            type_list = list(types) if types else []
+            value_list = list(values) if values else []
+            return _ok(data={"handle": p["handle"], "app_name": p["app_name"],
+                             "types": type_list, "values": value_list})
+
+        elif action == "set_xdata":
+            obj = zcad_conn.doc.HandleToObject(p["handle"])
+            types_arr = aInt(p["data_types"])
+            values_tuple = tuple(p["data_values"])
+            obj.SetXData(types_arr, values_tuple)
+            return _ok(f"成功写入 XData ({len(p['data_types'])} 项)", handle=p["handle"])
+
+        elif action == "delete_xdata":
+            obj = zcad_conn.doc.HandleToObject(p["handle"])
+            types_arr = aInt([1001])
+            values_tuple = (p["app_name"],)
+            obj.SetXData(types_arr, values_tuple)
+            return _ok(f"成功删除实体上的 XData (app={p['app_name']})", handle=p["handle"])
+
+        return _err("XData管理", ValueError(f"不支持的操作: {action}"))
+    except Exception as e:
+        return _err(f"XData管理({action})", e)
+
+
+@mcp.tool
+def manage_utility(action: str, params: dict = None) -> str:
+    """CAD工具方法(doc.Utility)。action及params:
+    translate_coordinates:{point:[x,y,z],from_system:int,to_system:int,[displacement:bool]}
+      坐标系: 0=WCS, 1=UCS, 2=DisplayDCS, 3=PaperSpaceDCS
+    polar_point:{point:[x,y,z],angle:float,distance:float} — 计算极坐标点
+    angle_to_real:{angle_str,unit:int} — 角度字符串转弧度
+      unit: 0=度, 1=度分秒, 2=弧度, 3=百分度, 4=勘测单位
+    angle_to_string:{angle:float,unit:int,precision:int} — 弧度转角度字符串
+    real_to_string:{value:float,unit:int,precision:int} — 实数转字符串
+      unit: 1=科学, 2=小数, 3=工程, 4=建筑, 5=分数
+    distance_to_real:{distance_str,unit:int} — 距离字符串转实数
+    prompt:{message} — 在命令行显示消息
+    get_object_id_string:{handle,[hex:bool]} — 获取实体ObjectID"""
+    try:
+        logger.info("tool_call manage_utility action=%s", action)
+        zcad_conn, _ = get_cad_connection()
+        p = params or {}
+        util = zcad_conn.doc.Utility
+
+        if action == "translate_coordinates":
+            pt = APoint(p["point"][0], p["point"][1],
+                        p["point"][2] if len(p["point"]) > 2 else 0)
+            disp = p.get("displacement", False)
+            result = util.TranslateCoordinates(pt, p["from_system"], p["to_system"], disp)
+            return _ok(data={"result": list(result)})
+
+        elif action == "polar_point":
+            pt = APoint(p["point"][0], p["point"][1],
+                        p["point"][2] if len(p["point"]) > 2 else 0)
+            result = util.PolarPoint(pt, p["angle"], p["distance"])
+            return _ok(data={"result": list(result)})
+
+        elif action == "angle_to_real":
+            result = util.AngleToReal(p["angle_str"], p["unit"])
+            return _ok(data={"angle_str": p["angle_str"], "radians": result})
+
+        elif action == "angle_to_string":
+            result = util.AngleToString(p["angle"], p["unit"], p["precision"])
+            return _ok(data={"angle": p["angle"], "string": result})
+
+        elif action == "real_to_string":
+            result = util.RealToString(p["value"], p["unit"], p["precision"])
+            return _ok(data={"value": p["value"], "string": result})
+
+        elif action == "distance_to_real":
+            result = util.DistanceToReal(p["distance_str"], p["unit"])
+            return _ok(data={"distance_str": p["distance_str"], "value": result})
+
+        elif action == "prompt":
+            util.Prompt(p["message"])
+            return _ok(f"消息已发送到命令行: {p['message']}")
+
+        elif action == "get_object_id_string":
+            obj = zcad_conn.doc.HandleToObject(p["handle"])
+            obj_id = obj.ObjectID
+            if p.get("hex", False):
+                return _ok(data={"handle": p["handle"], "object_id": hex(obj_id)})
+            return _ok(data={"handle": p["handle"], "object_id": str(obj_id)})
+
+        return _err("工具方法", ValueError(f"不支持的操作: {action}"))
+    except Exception as e:
+        return _err(f"工具方法({action})", e)
 
 
 # ============================================================
