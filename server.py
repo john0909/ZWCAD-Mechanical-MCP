@@ -5,6 +5,8 @@ ZWCAD Mechanical MCP Server - 基于 FastMCP 的中望机械CAD自动化服务
 """
 
 from fastmcp import FastMCP
+from pydantic import BaseModel, Field
+from typing import Union, List, Optional, Any, Dict
 from pyzwcad import ZwCAD, APoint
 from pyzwcad.types import aDouble, aInt
 from pyzwcadmech import ZwCADMech
@@ -115,20 +117,20 @@ def get_cad_connection():
     return zcad_conn, mech_conn
 
 
-def _ok(message: str = None, **data) -> str:
+def _ok(message: str = None, **data) -> dict:
     if message:
         data["msg"] = message
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return data
 
 
-def _err(action: str, e: Exception) -> str:
+def _err(action: str, e: Exception) -> dict:
     err_str = str(e)
     is_com = "CoInitialize" in err_str or "-2147221008" in err_str
     logger.error("tool_error action=%s error=%s", action, err_str)
     result = {"error": f"{action}失败: {err_str}", "code": "COM_INIT_ERROR" if is_com else "OPERATION_ERROR"}
     if is_com:
         result["hint"] = "确保中望机械2026已启动; 重启ZWCAD和MCP Server; 检查pywin32/comtypes"
-    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    return result
 
 
 def _find_entity(zcad_conn, object_type: str = None,
@@ -160,7 +162,14 @@ def _flatten_points(vertices):
     return flat
 
 
-def _check_params(params: dict, required: list, context: str) -> str:
+def _to_dict(params):
+    if hasattr(params, "model_dump"):
+        return params.model_dump(exclude_unset=True)
+    elif hasattr(params, "dict"):
+        return params.dict(exclude_unset=True)
+    return params
+
+def _check_params(params: dict, required: list, context: str) -> dict:
     """Return error string if any required key is missing, else None."""
     missing = [k for k in required if k not in params]
     if missing:
@@ -168,7 +177,156 @@ def _check_params(params: dict, required: list, context: str) -> str:
     return None
 
 
+
 # ============================================================
+# Pydantic Models for Tools
+# ============================================================
+
+class LineParams(BaseModel):
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    z1: Optional[float] = 0.0
+    z2: Optional[float] = 0.0
+
+class CircleParams(BaseModel):
+    center_x: float
+    center_y: float
+    radius: float
+    center_z: Optional[float] = 0.0
+
+class ArcParams(BaseModel):
+    center_x: float
+    center_y: float
+    radius: float
+    start_angle: float
+    end_angle: float
+    center_z: Optional[float] = 0.0
+
+class EllipseParams(BaseModel):
+    center_x: float
+    center_y: float
+    major_axis_x: float
+    major_axis_y: float
+    radius_ratio: float
+    center_z: Optional[float] = 0.0
+    major_axis_z: Optional[float] = 0.0
+
+class LwPolylineParams(BaseModel):
+    vertices: List[Union[List[float], float]]
+    closed: Optional[bool] = False
+
+class PolylineParams(BaseModel):
+    vertices: List[Union[List[float], float]]
+    closed: Optional[bool] = False
+
+class SplineParams(BaseModel):
+    fit_points: List[Union[List[float], float]]
+    start_tangent_x: Optional[float] = 0.0
+    start_tangent_y: Optional[float] = 0.0
+    start_tangent_z: Optional[float] = 0.0
+    end_tangent_x: Optional[float] = 0.0
+    end_tangent_y: Optional[float] = 0.0
+    end_tangent_z: Optional[float] = 0.0
+
+class PointParams(BaseModel):
+    x: float
+    y: float
+    z: Optional[float] = 0.0
+
+class RayParams(BaseModel):
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    z1: Optional[float] = 0.0
+    z2: Optional[float] = 0.0
+
+class XlineParams(BaseModel):
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    z1: Optional[float] = 0.0
+    z2: Optional[float] = 0.0
+
+class MlineParams(BaseModel):
+    vertices: List[Union[List[float], float]]
+
+class Polyline3DParams(BaseModel):
+    vertices: List[Union[List[float], float]]
+
+DrawEntityParams = Union[
+    LineParams, CircleParams, ArcParams, EllipseParams,
+    LwPolylineParams, PolylineParams, SplineParams, PointParams,
+    RayParams, XlineParams, MlineParams, Polyline3DParams,
+    Dict[str, Any]
+]
+
+class BoxParams(BaseModel):
+    origin_x: float
+    origin_y: float
+    origin_z: float
+    length: float
+    width: float
+    height: float
+
+class CylinderParams(BaseModel):
+    center_x: float
+    center_y: float
+    center_z: float
+    radius: float
+    height: float
+
+class ConeParams(BaseModel):
+    center_x: float
+    center_y: float
+    center_z: float
+    base_radius: float
+    height: float
+
+class SphereParams(BaseModel):
+    center_x: float
+    center_y: float
+    center_z: float
+    radius: float
+
+class TorusParams(BaseModel):
+    center_x: float
+    center_y: float
+    center_z: float
+    torus_radius: float
+    tube_radius: float
+
+class WedgeParams(BaseModel):
+    center_x: float
+    center_y: float
+    center_z: float
+    length: float
+    width: float
+    height: float
+
+class Face3DParams(BaseModel):
+    x1: float
+    y1: float
+    z1: float
+    x2: float
+    y2: float
+    z2: float
+    x3: float
+    y3: float
+    z3: float
+    x4: Optional[float] = None
+    y4: Optional[float] = None
+    z4: Optional[float] = None
+
+Draw3DSolidParams = Union[
+    BoxParams, CylinderParams, ConeParams, SphereParams, TorusParams, WedgeParams, Face3DParams, Dict[str, Any]
+]
+
+# ============================================================
+
 # 2D 绘图内部实现
 # ============================================================
 
@@ -698,7 +856,7 @@ _MODIFY_DISPATCH = {
 
 
 @mcp.tool
-def draw_entity(entity_type: str, params: dict, layer: str = "0") -> str:
+def draw_entity(entity_type: str, params: DrawEntityParams, layer: str = "0") -> dict:
     """绘制2D实体。entity_type及params([]=可选):
     line:{x1,y1,x2,y2,[z1,z2]} | circle:{center_x,center_y,radius,[center_z]}
     arc:{center_x,center_y,radius,start_angle,end_angle}(弧度)
@@ -707,6 +865,7 @@ def draw_entity(entity_type: str, params: dict, layer: str = "0") -> str:
     spline:{fit_points:[[x,y,z],...]} | point:{x,y,[z]}
     ray/xline:{x1,y1,x2,y2} | mline/3d_polyline:{vertices:[[x,y,z],...]}"""
     try:
+        params = _to_dict(params)
         logger.info("tool_call draw_entity type=%s layer=%s", entity_type, layer)
         zcad_conn, _ = get_cad_connection()
         fn = _DRAW_DISPATCH.get(entity_type)
@@ -722,7 +881,7 @@ def draw_entity(entity_type: str, params: dict, layer: str = "0") -> str:
 
 
 @mcp.tool
-def draw_batch(entities: list, layer: str = "0") -> str:
+def draw_batch(entities: list, layer: str = "0") -> dict:
     """批量绘制多个实体，减少交互轮次。entities为dict列表，每个dict含entity_type和params，可选layer。
     示例: [{"entity_type":"line","params":{"x1":0,"y1":0,"x2":10,"y2":10}},{"entity_type":"circle","params":{"center_x":5,"center_y":5,"radius":3}}]"""
     try:
@@ -754,7 +913,7 @@ def draw_batch(entities: list, layer: str = "0") -> str:
 
 
 @mcp.tool
-def draw_3d_solid(solid_type: str, params: dict, layer: str = "0") -> str:
+def draw_3d_solid(solid_type: str, params: Draw3DSolidParams, layer: str = "0") -> dict:
     """绘制3D实体。solid_type及params([]=可选):
     box:{origin_x,origin_y,origin_z,length,width,height}
     cylinder:{center_x,center_y,center_z,radius,height}
@@ -764,6 +923,7 @@ def draw_3d_solid(solid_type: str, params: dict, layer: str = "0") -> str:
     wedge:{center_x,center_y,center_z,length,width,height}
     3d_face:{x1,y1,z1,x2,y2,z2,x3,y3,z3,[x4,y4,z4]}"""
     try:
+        params = _to_dict(params)
         zcad_conn, _ = get_cad_connection()
         fn = _3D_DISPATCH.get(solid_type)
         if not fn:
@@ -778,7 +938,7 @@ def draw_3d_solid(solid_type: str, params: dict, layer: str = "0") -> str:
 
 
 @mcp.tool
-def add_annotation(annotation_type: str, params: dict, layer: str = "0") -> str:
+def add_annotation(annotation_type: str, params: dict, layer: str = "0") -> dict:
     """添加注释对象。annotation_type及params([]=可选):
     text:{text,x,y,[z,height]} | mtext:{text,x,y,[z,width,height]}
     leader:{points:[[x,y,z],...]，[annotation_type:0/1/2]}
@@ -801,7 +961,7 @@ def add_annotation(annotation_type: str, params: dict, layer: str = "0") -> str:
 
 
 @mcp.tool
-def add_dimension(dim_type: str, params: dict, layer: str = "0") -> str:
+def add_dimension(dim_type: str, params: dict, layer: str = "0") -> dict:
     """添加标注。dim_type及params(z坐标均可选):
     aligned:{x1,y1,x2,y2,text_x,text_y}
     rotated:{x1,y1,x2,y2,text_x,text_y,rotation_angle}
@@ -826,7 +986,7 @@ def add_dimension(dim_type: str, params: dict, layer: str = "0") -> str:
 @mcp.tool
 def insert_block(block_name: str, x: float, y: float, z: float = 0,
                  x_scale: float = 1.0, y_scale: float = 1.0, z_scale: float = 1.0,
-                 rotation: float = 0, layer: str = "0") -> str:
+                 rotation: float = 0, layer: str = "0") -> dict:
     """在指定位置插入图块。rotation为弧度。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -841,7 +1001,7 @@ def insert_block(block_name: str, x: float, y: float, z: float = 0,
 @mcp.tool
 def transform_entity(action: str, params: dict,
                      object_type: str = None, property_name: str = None,
-                     property_value: str = None, handle: str = None) -> str:
+                     property_value: str = None, handle: str = None) -> dict:
     """对实体执行变换操作。通过handle(优先)或object_type+property_name+property_value定位实体。
     action及params([]=可选):
     copy:{from_x,from_y,to_x,to_y,[z]} | move:{from_x,from_y,to_x,to_y,[z]}
@@ -872,7 +1032,7 @@ def transform_entity(action: str, params: dict,
 @mcp.tool
 def modify_entity(entity_type: str, params: dict,
                   object_type: str = None, property_name: str = None,
-                  property_value: str = None, handle: str = None) -> str:
+                  property_value: str = None, handle: str = None) -> dict:
     """修改实体几何属性。定位参数同transform_entity。entity_type及params(均可选除特别说明):
     circle:{radius,center_x,center_y,center_z}
     arc:{radius,center_x,center_y,start_angle,end_angle}
@@ -923,7 +1083,7 @@ def modify_entity(entity_type: str, params: dict,
 
 @mcp.tool
 def get_entity_info(handle: str = None, object_type: str = None,
-                    property_name: str = None, property_value: str = None) -> str:
+                    property_name: str = None, property_value: str = None) -> dict:
     """获取实体详细信息（属性、几何数据、边界框）。定位参数同transform_entity。"""
     try:
         logger.info("tool_call get_entity_info handle=%s", handle)
@@ -980,7 +1140,7 @@ def set_entity_properties(layer: str = None, color: int = None,
                           linetype: str = None, linetype_scale: float = None,
                           lineweight: float = None, visible: bool = None,
                           object_type: str = None, property_name: str = "Layer",
-                          property_value: str = "", handle: str = None) -> str:
+                          property_value: str = "", handle: str = None) -> dict:
     """设置实体通用属性（layer/color/linetype等）。定位参数同transform_entity。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -1009,7 +1169,7 @@ def set_entity_properties(layer: str = None, color: int = None,
 
 @mcp.tool
 def find_object(object_type: str = None, property_name: str = None,
-                property_value: str = None, handle: str = None) -> str:
+                property_value: str = None, handle: str = None) -> dict:
     """查找符合条件的第一个对象。定位参数同transform_entity。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -1030,7 +1190,7 @@ def find_object(object_type: str = None, property_name: str = None,
 
 
 @mcp.tool
-def get_objects_in_model(object_type: str = None, limit: int = 500) -> str:
+def get_objects_in_model(object_type: str = None, limit: int = 500) -> dict:
     """获取模型空间中的对象列表。object_type可选过滤，limit默认500。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -1051,7 +1211,7 @@ def get_objects_in_model(object_type: str = None, limit: int = 500) -> str:
 
 
 @mcp.tool
-def zoom(mode: str, params: dict = None) -> str:
+def zoom(mode: str, params: dict = None) -> dict:
     """视图缩放。mode: extents|all|previous(无需params),
     window:{x1,y1,x2,y2}, center:{center_x,center_y,[magnify]},
     scale:{scale,[scale_type:0全图/1当前]}"""
@@ -1082,7 +1242,7 @@ def zoom(mode: str, params: dict = None) -> str:
 
 @mcp.tool
 def manage_style(style_type: str, action: str, name: str = None,
-                 properties: dict = None) -> str:
+                 properties: dict = None) -> dict:
     """管理图层/线型/文字样式/标注样式。style_type: layer|linetype|textstyle|dimstyle
     action: list|add|set_active|set_properties。properties按style_type不同:
     layer: {color,linetype,on,locked,freeze}
@@ -1202,7 +1362,7 @@ def manage_style(style_type: str, action: str, name: str = None,
 
 
 @mcp.tool
-def manage_view(action: str, name: str = None, params: dict = None) -> str:
+def manage_view(action: str, name: str = None, params: dict = None) -> dict:
     """管理布局和视图。action: list_layouts|get_active_layout|add_layout|set_active_layout|list_views|add_view
     |set_active_space|get_active_space。
     add/set_active/需要name参数。
@@ -1270,14 +1430,14 @@ def manage_view(action: str, name: str = None, params: dict = None) -> str:
 
 
 @mcp.tool
-def manage_document(action: str, params: dict = None) -> str:
+def manage_document(action: str, params: dict = None) -> dict:
     """文档管理。action及params:
     new(无需params) | save:{file_path} | close:{[save_changes]}
     info/list(无需params) | activate:{name}
     export:{filename,[extension]} | import:{filename,[x,y,z,scale_factor]}
     plot:{plot_file,[plot_config]}
     regen:{[scope:0=AllViewports/1=ActiveViewport]}
-    send_command:{command} | start_undo/end_undo(无需params)
+    start_undo/end_undo(无需params)
     wblock:{file_name,[selection_set_name]}"""
     try:
         logger.info("tool_call manage_document action=%s", action)
@@ -1347,11 +1507,6 @@ def manage_document(action: str, params: dict = None) -> str:
             zcad_conn.doc.Regen(scope)
             return _ok(f"重生成完成 (scope={scope})")
 
-        elif action == "send_command":
-            cmd = p["command"]
-            zcad_conn.doc.SendCommand(cmd)
-            return _ok(f"命令已发送: {cmd}")
-
         elif action == "start_undo":
             zcad_conn.doc.StartUndoMark()
             return _ok("撤消组标记已开始")
@@ -1386,7 +1541,7 @@ def manage_document(action: str, params: dict = None) -> str:
 @mcp.tool
 def manage_table(action: str, params: dict,
                  object_type: str = None, property_name: str = None,
-                 property_value: str = None, handle: str = None) -> str:
+                 property_value: str = None, handle: str = None) -> dict:
     """操作CAD表格对象。定位参数同transform_entity。action及params:
     set_cell:{row,col,text} | get_cell:{row,col}
     insert_rows:{row_index,[count,height]} | delete_rows:{row_index,[count]}
@@ -1481,7 +1636,7 @@ def _read_pickfirst_selection(zcad_conn, max_items=500):
 
 
 @mcp.tool
-def select_entities(action: str, params: dict = None) -> str:
+def select_entities(action: str, params: dict = None) -> dict:
     """选择集操作。action及params:
     select:{mode}(0=Window/1=Crossing需{x1,y1,x2,y2},2=Previous/4=Last/5=All无需坐标,[name,filter:{entity_type,layer,color},return_items])
     by_polygon:{mode(0=Fence/1=WinPoly/2=CrossPoly),points,[name,filter,return_items]}
@@ -1593,7 +1748,7 @@ def select_entities(action: str, params: dict = None) -> str:
 @mcp.tool
 def manage_block(action: str, name: str = None, params: dict = None,
                  object_type: str = None, property_name: str = None,
-                 property_value: str = None, handle: str = None) -> str:
+                 property_value: str = None, handle: str = None) -> dict:
     """图块管理。action: list|info(需name)|create(需name,[x,y,z])|get_attributes(定位参数同transform_entity)。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -1651,7 +1806,7 @@ def manage_block(action: str, name: str = None, params: dict = None,
 
 
 @mcp.tool
-def get_variable(name: str) -> str:
+def get_variable(name: str) -> dict:
     """获取系统变量值（如DIMSCALE, LTSCALE, OSMODE等）。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -1662,7 +1817,7 @@ def get_variable(name: str) -> str:
 
 
 @mcp.tool
-def set_variable(name: str, value) -> str:
+def set_variable(name: str, value) -> dict:
     """设置系统变量值。"""
     try:
         zcad_conn, _ = get_cad_connection()
@@ -1673,7 +1828,7 @@ def set_variable(name: str, value) -> str:
 
 
 @mcp.tool
-def get_app_info(scope: str = "cad") -> str:
+def get_app_info(scope: str = "cad") -> dict:
     """获取应用信息。scope: cad(ZWCAD版本/路径/窗口)|mech_version|mech_cad_path|mech_zwm_path|mech_style_path|mech_about"""
     try:
         zcad_conn, mech_conn = get_cad_connection()
@@ -1709,7 +1864,7 @@ def get_app_info(scope: str = "cad") -> str:
 
 
 @mcp.tool
-def manage_title_block(action: str, params: dict = None) -> str:
+def manage_title_block(action: str, params: dict = None) -> dict:
     """标题栏管理。action: get_info|get_field_count(无需params),
     set_field:{field_name,value} | update_batch:{fields:{name:val,...}}
     get_field_by_index:{index}"""
@@ -1763,7 +1918,7 @@ def manage_title_block(action: str, params: dict = None) -> str:
 
 
 @mcp.tool
-def manage_frame(action: str, params: dict = None) -> str:
+def manage_frame(action: str, params: dict = None) -> dict:
     """图框管理。action: list|get_info|get_count|get_next_name|refresh(无需params),
     get_name_by_index:{index} | get_name_by_point:{x,y,[z]}
     switch:{frame_name} | update:{width,height,orientation,scale1,scale2,...}"""
@@ -1841,7 +1996,7 @@ def manage_frame(action: str, params: dict = None) -> str:
 
 
 @mcp.tool
-def manage_bom(action: str, params: dict = None) -> str:
+def manage_bom(action: str, params: dict = None) -> dict:
     """明细表(BOM)管理。action及params:
     get_row_count/refresh(无需params)
     get_row:{row_index} | add_row:{data:{name:val,...}}
@@ -1940,7 +2095,7 @@ def manage_bom(action: str, params: dict = None) -> str:
 
 
 @mcp.tool
-def manage_mech_db(action: str, params: dict = None) -> str:
+def manage_mech_db(action: str, params: dict = None) -> dict:
     """机械模块数据库操作。action: open({[file_path]})|save({[flag]})|close。"""
     try:
         _, mech_conn = get_cad_connection()
@@ -1967,7 +2122,7 @@ def manage_mech_db(action: str, params: dict = None) -> str:
 
 
 @mcp.tool
-def mech_doc(action: str, file_path: str, template: str = None) -> str:
+def mech_doc(action: str, file_path: str, template: str = None) -> dict:
     """中望机械文档操作。action: open|new|new_named(需template参数)。"""
     try:
         _, mech_conn = get_cad_connection()
@@ -1986,7 +2141,7 @@ def mech_doc(action: str, file_path: str, template: str = None) -> str:
 
 
 @mcp.tool
-def cad_environment_init(std_name: str) -> str:
+def cad_environment_init(std_name: str) -> dict:
     """初始化CAD环境标准（如GB, ISO, DIN等）。"""
     try:
         _, mech_conn = get_cad_connection()
@@ -1998,7 +2153,7 @@ def cad_environment_init(std_name: str) -> str:
 
 
 @mcp.tool
-def get_balloon(text: str = "") -> str:
+def get_balloon(text: str = "") -> dict:
     """获取球标对象（用于零件序号标注）。"""
     try:
         _, mech_conn = get_cad_connection()
@@ -2033,7 +2188,7 @@ def create_frame(
     have_btl: bool = True,
     have_csl: bool = False,
     have_ggl: bool = False
-) -> str:
+) -> dict:
     """新建图幅/图框。所有参数均可选，默认从XML配置读取。
     orientation: landscape|portrait。have_*: 各栏开关(dhl/fjl/btl/csl/ggl)。"""
     try:
@@ -2104,7 +2259,7 @@ def create_frame(
 
 
 @mcp.tool
-def manage_dictionary(action: str, params: dict = None) -> str:
+def manage_dictionary(action: str, params: dict = None) -> dict:
     """命名对象字典与XRecord管理。action及params:
     list(无需params) — 列出所有顶层字典
     add:{name} — 创建新字典
@@ -2223,7 +2378,7 @@ def manage_dictionary(action: str, params: dict = None) -> str:
 
 
 @mcp.tool
-def manage_xdata(action: str, params: dict = None) -> str:
+def manage_xdata(action: str, params: dict = None) -> dict:
     """扩展数据(XData)管理。action及params:
     list_apps(无需params) — 列出所有已注册应用程序名
     register_app:{app_name} — 注册新应用程序名(写XData前必须先注册)
@@ -2275,7 +2430,7 @@ def manage_xdata(action: str, params: dict = None) -> str:
 
 
 @mcp.tool
-def manage_utility(action: str, params: dict = None) -> str:
+def manage_utility(action: str, params: dict = None) -> dict:
     """CAD工具方法(doc.Utility)。action及params:
     translate_coordinates:{point:[x,y,z],from_system:int,to_system:int,[displacement:bool]}
       坐标系: 0=WCS, 1=UCS, 2=DisplayDCS, 3=PaperSpaceDCS
