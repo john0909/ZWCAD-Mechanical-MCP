@@ -1,5 +1,5 @@
 fastmcp>=2.0
 pyzwcad>=0.1
-pyzwcadmech>=0.1
+pyzwcadmech>=0.2.0
 comtypes>=1.1.0
 pywin32>=305
