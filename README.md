@@ -45,6 +45,8 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 
 ## 快速开始
 
+最简单的办法：安装好中望机械后，打开Agent，在里面输入:安装上此MCP服务: https://github.com/john0909/ZWCAD-Mechanical-MCP
+
 ### 1. 安装依赖
 
 ```bash
@@ -329,6 +331,8 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 - **Python**: 3.9+
 
 ## Quick Start
+
+The simplest method: After installing ZWCAD MFG, open Agent and enter: Install this MCP server: https://github.com/john0909/ZWCAD-Mechanical-MCP
 
 ### 1. Install dependencies
 
