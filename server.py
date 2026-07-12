@@ -4,20 +4,16 @@ ZWCAD Mechanical MCP Server - 基于 FastMCP 的中望机械CAD自动化服务
 标题栏编辑、图框切换、明细表操作等功能
 """
 
-from fastmcp import FastMCP
-from pydantic import BaseModel, Field
-from typing import Union, List, Optional, Any, Dict
-from pyzwcad import ZwCAD, APoint
-from pyzwcad.types import aDouble, aInt
-from pyzwcadmech import ZwCADMech
 import json
 import math
 import sys
-import pythoncom
-import xml.etree.ElementTree as ET
 import os
 import logging
+import pythoncom
+import xml.etree.ElementTree as ET
+from typing import Union, List, Optional, Any, Dict
 
+# 日志先于一切：stdout 保留给 MCP JSON-RPC，任何非 JSON 输出都会破坏协议，故全部走 stderr
 logging.basicConfig(
     stream=sys.stderr,
     level=logging.INFO,
@@ -25,10 +21,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# COM 初始化(STA)须在任何 COM 调用之前，含下方类型库加载
 try:
     pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
 except Exception:
     pass
+
+from pydantic import BaseModel, Field
+from fastmcp import FastMCP
+from pyzwcad import ZwCAD, APoint
+from pyzwcad.types import aDouble, aInt
+
+# ---- 预加载 ZwmToolKit 类型库（按注册表 GUID，与安装路径无关）----
+# pyzwcadmech 在 import 时会尝试加载 ZwmToolKit.tlb，但其默认仅做文件系统 glob
+# (C:\Program Files\ZWSOFT\ZWCAD Mechanical*\Zwcadm\ZwmToolKit*.tlb)，安装路径不匹配
+# 即静默失败。而 get_title/get_bom/get_frame 等出参指针接口强依赖该类型库，失败后这些
+# 接口全部不可用。这里先用注册表中已注册的类型库 GUID 生成 comtypes 缓存模块，使
+# pyzwcadmech 导入时直接命中，绕开文件系统 glob 的路径问题。
+ZWM_TYPELIB_GUID = "{2F671C10-669F-11E7-91B7-BC5FF42AC839}"
+try:
+    import comtypes.client
+    comtypes.client.GetModule((ZWM_TYPELIB_GUID, 1, 0))
+    logger.info("预加载 ZwmToolKit 类型库成功 (GUID=%s)", ZWM_TYPELIB_GUID)
+except Exception as _tlb_err:
+    logger.warning(
+        "预加载 ZwmToolKit 类型库失败: %s; 机械模块(标题栏/明细表/图框)可能不可用，"
+        "可设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb 后重启",
+        _tlb_err,
+    )
+
+from pyzwcadmech import ZwCADMech
 
 mcp = FastMCP(name="ZWCAD Mechanical Drawing Server")
 
@@ -123,13 +145,36 @@ def _ok(message: str = None, **data) -> dict:
     return data
 
 
+def _typelib_state():
+    """返回 (loaded, source, error) 描述 ZwmToolKit 类型库加载状态。
+
+    类型库在 pyzwcadmech 导入时一次性加载；若未加载，get_title/get_bom/get_frame
+    等出参指针接口将不可用。此处读取库内全局状态，供错误提示与诊断工具使用。
+    """
+    try:
+        from pyzwcadmech import api as _zwm_api
+        return _zwm_api.ZWM is not None, _zwm_api.TYPELIB_SOURCE, _zwm_api.TYPELIB_ERROR
+    except Exception as exc:
+        return False, None, str(exc)
+
+
 def _err(action: str, e: Exception) -> dict:
     err_str = str(e)
     is_com = "CoInitialize" in err_str or "-2147221008" in err_str
     logger.error("tool_error action=%s error=%s", action, err_str)
     result = {"error": f"{action}失败: {err_str}", "code": "COM_INIT_ERROR" if is_com else "OPERATION_ERROR"}
+    hints = []
     if is_com:
-        result["hint"] = "确保中望机械2026已启动; 重启ZWCAD和MCP Server; 检查pywin32/comtypes"
+        hints.append("确保中望机械2026已启动; 重启ZWCAD和MCP Server; 检查pywin32/comtypes")
+    # 类型库缺失是机械接口失效的常见根因，在此给出明确线索（仅在确实未加载时触发）
+    _tlb_loaded, _tlb_src, _tlb_err = _typelib_state()
+    if not _tlb_loaded:
+        hints.append(
+            "检测到 ZwmToolKit 类型库未加载，标题栏/明细表/图框等机械接口将不可用; "
+            "可用 mech_diagnose 工具排查，或设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb 后重启 MCP Server"
+        )
+    if hints:
+        result["hint"] = "; ".join(hints)
     return result
 
 
@@ -1856,6 +1901,77 @@ def get_app_info(scope: str = "cad") -> dict:
         return _err("获取信息", ValueError(f"不支持的scope: {scope}"))
     except Exception as e:
         return _err(f"获取应用信息({scope})", e)
+
+
+@mcp.tool
+def mech_diagnose() -> dict:
+    """诊断机械模块连接与 ZwmToolKit 类型库加载状态。
+
+    用于排查"加载 ZwmToolKit.tlb 失败"导致标题栏/明细表/图框等接口不可用的问题。
+    逐项探测：类型库加载、ZWCAD 应用、ZwmApp 机械接口、ZwmDb 关联图纸、标题栏获取(依赖类型库)。
+
+    返回: 各探测项状态与错误信息，以及修复建议。
+    """
+    result = {}
+
+    # 1) 类型库加载状态（import 时确定，是机械接口能否工作的前提）
+    loaded, source, tlb_err = _typelib_state()
+    result["typelib_loaded"] = loaded
+    result["typelib_source"] = source
+    if tlb_err:
+        result["typelib_error"] = str(tlb_err)
+
+    # 2) 连接 ZWCAD
+    try:
+        zcad_conn, mech_conn = get_cad_connection()
+    except Exception as e:
+        result["cad_connection_ok"] = False
+        result["cad_connection_error"] = str(e)
+        return _ok("诊断完成(连接建立失败)", **result)
+
+    # ZWCAD.Application
+    try:
+        _ = mech_conn.app
+        result["cad_app_ok"] = True
+    except Exception as e:
+        result["cad_app_ok"] = False
+        result["cad_app_error"] = str(e)
+
+    # ZwmToolKit.ZwmApp
+    try:
+        _ = mech_conn.zwm_app
+        result["zwm_app_ok"] = True
+    except Exception as e:
+        result["zwm_app_ok"] = False
+        result["zwm_app_error"] = str(e)
+
+    # ZwmDb + 关联当前图纸
+    try:
+        mech_conn.open_file("")
+        result["zwm_db_ok"] = True
+    except Exception as e:
+        result["zwm_db_ok"] = False
+        result["zwm_db_error"] = str(e)
+
+    # 标题栏获取：真正依赖类型库的出参指针调用，失败则印证类型库问题
+    if result.get("zwm_db_ok"):
+        try:
+            title = mech_conn.get_title()
+            result["title_probe_ok"] = title is not None
+        except Exception as e:
+            result["title_probe_ok"] = False
+            result["title_probe_error"] = str(e)
+
+    # 综合修复建议
+    if not loaded:
+        result["hint"] = (
+            "ZwmToolKit 类型库未加载，标题栏/明细表/图框等机械接口不可用。"
+            "修复方法：1) 确认中望机械已正常安装；"
+            "2) 设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb "
+            "(如 C:\\Program Files\\ZWSOFT\\ZWCAD Mechanical 2026 Chs\\Zwcadm\\ZwmToolKit.tlb)；"
+            "3) 重启 MCP Server。"
+        )
+    return _ok("诊断完成", **result)
 
 
 # ############################################################
