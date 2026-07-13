@@ -30,7 +30,8 @@ from fastmcp import FastMCP
 from pyzwcad import ZwCAD, APoint
 from pyzwcad.types import aDouble, aInt
 
-# 按注册表 GUID 预加载 ZwmToolKit 类型库，规避 pyzwcadmech 默认文件系统 glob 在路径不匹配时静默失败
+# 预加载 ZwmToolKit 类型库（按 GUID 从注册表加载）。
+# pyzwcadmech.api 自身也有多策略回退加载（文件 glob / env / 预生成模块 / GUID），此处预加载可提前生成 comtypes.gen 模块。
 ZWM_TYPELIB_GUID = "{2F671C10-669F-11E7-91B7-BC5FF42AC839}"
 try:
     import comtypes.client
@@ -38,8 +39,7 @@ try:
     logger.info("预加载 ZwmToolKit 类型库成功 (GUID=%s)", ZWM_TYPELIB_GUID)
 except Exception as _tlb_err:
     logger.warning(
-        "预加载 ZwmToolKit 类型库失败: %s; 机械模块(标题栏/明细表/图框)可能不可用，"
-        "可设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb 后重启",
+        "预加载 ZwmToolKit 类型库失败: %s; pyzwcadmech.api 将尝试回退策略",
         _tlb_err,
     )
 
@@ -122,14 +122,27 @@ def _get_default_frame_size(standard_name):
     return "A3"
 
 
+_cad_conn_cache = None
+
+
 def get_cad_connection():
+    global _cad_conn_cache
+    if _cad_conn_cache is not None:
+        return _cad_conn_cache
     try:
         pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
     except Exception:
         pass
     zcad_conn = ZwCAD()
     mech_conn = ZwCADMech()
-    return zcad_conn, mech_conn
+    _cad_conn_cache = (zcad_conn, mech_conn)
+    return _cad_conn_cache
+
+
+def reset_cad_connection():
+    """清除连接缓存，下次 get_cad_connection 将创建新连接。"""
+    global _cad_conn_cache
+    _cad_conn_cache = None
 
 
 def _ok(message: str = None, **data) -> dict:
@@ -147,6 +160,22 @@ def _typelib_state():
         return False, None, str(exc)
 
 
+def _require_typelib(action: str):
+    """检查 ZwmToolKit 类型库是否已加载，未加载则返回错误 dict，否则返回 None。"""
+    loaded, source, tlb_err = _typelib_state()
+    if not loaded:
+        hint_parts = [
+            "ZwmToolKit 类型库未加载，标题栏/明细表/图框等机械接口不可用。",
+            "修复方法: 1) 确认中望机械已安装并启动; "
+            "2) 设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb; "
+            "3) 调用 mech_diagnose 排查; 4) 重启 MCP Server。",
+        ]
+        if tlb_err:
+            hint_parts.append(f"错误详情: {tlb_err}")
+        return {"error": f"{action}失败: ZwmToolKit 类型库未加载", "code": "TYPELIB_NOT_LOADED", "hint": " ".join(hint_parts)}
+    return None
+
+
 def _err(action: str, e: Exception) -> dict:
     err_str = str(e)
     is_com = "CoInitialize" in err_str or "-2147221008" in err_str
@@ -154,12 +183,12 @@ def _err(action: str, e: Exception) -> dict:
     result = {"error": f"{action}失败: {err_str}", "code": "COM_INIT_ERROR" if is_com else "OPERATION_ERROR"}
     hints = []
     if is_com:
-        hints.append("确保中望机械2026已启动; 重启ZWCAD和MCP Server; 检查pywin32/comtypes")
+        hints.append("确保中望机械已启动; 重启ZWCAD和MCP Server; 检查pywin32/comtypes")
     _tlb_loaded, _tlb_src, _tlb_err = _typelib_state()
     if not _tlb_loaded:
         hints.append(
             "检测到 ZwmToolKit 类型库未加载，标题栏/明细表/图框等机械接口将不可用; "
-            "可用 mech_diagnose 工具排查，或设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb 后重启 MCP Server"
+            "可设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb 后重启 MCP Server"
         )
     if hints:
         result["hint"] = "; ".join(hints)
@@ -1905,6 +1934,7 @@ def mech_diagnose() -> dict:
     if tlb_err:
         result["typelib_error"] = str(tlb_err)
 
+    reset_cad_connection()
     try:
         zcad_conn, mech_conn = get_cad_connection()
     except Exception as e:
@@ -1947,7 +1977,7 @@ def mech_diagnose() -> dict:
             "修复方法：1) 确认中望机械已正常安装；"
             "2) 设置环境变量 PYZWCADMECH_TLB_PATH 指向 ZwmToolKit.tlb "
             "(如 C:\\Program Files\\ZWSOFT\\ZWCAD Mechanical 2026 Chs\\Zwcadm\\ZwmToolKit.tlb)；"
-            "3) 重启 MCP Server。"
+            "3) 调用 mech_diagnose 重新排查（已自动重置连接缓存）；4) 重启 MCP Server。"
         )
     return _ok("诊断完成", **result)
 
@@ -1963,6 +1993,9 @@ def manage_title_block(action: str, params: dict = None) -> dict:
     set_field:{field_name,value} | update_batch:{fields:{name:val,...}}
     get_field_by_index:{index}"""
     try:
+        _tlb_err = _require_typelib("标题栏管理")
+        if _tlb_err:
+            return _tlb_err
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
         title = mech_conn.get_title()
@@ -2286,6 +2319,9 @@ def create_frame(
     """新建图幅/图框。所有参数均可选，默认从XML配置读取。
     orientation: landscape|portrait。have_*: 各栏开关(dhl/fjl/btl/csl/ggl)。"""
     try:
+        _tlb_err = _require_typelib("创建图框")
+        if _tlb_err:
+            return _tlb_err
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
 
