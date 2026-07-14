@@ -1,4 +1,4 @@
-"""
+﻿"""
 ZWCAD Mechanical MCP Server - 基于 FastMCP 的中望机械CAD自动化服务
 提供画直线、画圆、画弧、画椭圆、多段线、样条曲线、标注、图块、图层、
 标题栏编辑、图框切换、明细表操作等功能
@@ -47,7 +47,43 @@ from pyzwcadmech import ZwCADMech
 
 mcp = FastMCP(name="ZWCAD Mechanical Drawing Server")
 
-STYLES_BASE_PATH = r"C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles"
+_styles_base_path_cache = None
+
+
+_DEFAULT_STYLES_BASE_PATH = r"C:\Users\Public\Documents\ZWSoft\zwcadm\2026\zh-CN\styles"
+
+
+def _get_styles_base_path() -> str:
+    """从运行中的 ZWCAD 机械模块 get_style_path 解析样式目录（…/<lang>/styles）。
+    找不到目录时回退到默认 zh-CN styles 路径。"""
+    global _styles_base_path_cache
+    if _styles_base_path_cache:
+        return _styles_base_path_cache
+
+    styles_dir = None
+    try:
+        _, mech_conn = get_cad_connection()
+        style_path = mech_conn.zwm_app.get_style_path()
+        if style_path:
+            style_path = os.path.normpath(style_path.rstrip("\\/"))
+            # get_style_path 通常返回 …/zwcadm/<year>/<lang>/，样式 XML 在 styles 子目录
+            if os.path.basename(style_path).lower() == "styles":
+                styles_dir = style_path
+            else:
+                styles_dir = os.path.join(style_path, "styles")
+    except Exception as e:
+        logger.warning("解析样式目录失败，将使用默认路径: %s", e)
+
+    if not styles_dir or not os.path.isdir(styles_dir):
+        logger.warning(
+            "样式目录不存在: %s，使用默认路径: %s",
+            styles_dir, _DEFAULT_STYLES_BASE_PATH,
+        )
+        styles_dir = _DEFAULT_STYLES_BASE_PATH
+
+    _styles_base_path_cache = styles_dir
+    return styles_dir
+
 
 def _parse_xml_file(file_path):
     if not os.path.exists(file_path):
@@ -57,7 +93,7 @@ def _parse_xml_file(file_path):
 
 
 def _get_default_standard():
-    xml_path = os.path.join(STYLES_BASE_PATH, "standard.xml")
+    xml_path = os.path.join(_get_styles_base_path(), "standard.xml")
     root = _parse_xml_file(xml_path)
     for standard in root.findall('Standard'):
         if standard.get('Default') == '1':
@@ -67,7 +103,7 @@ def _get_default_standard():
 
 
 def _get_title_styles(standard_name):
-    xml_path = os.path.join(STYLES_BASE_PATH, standard_name, "TitleStyles.xml")
+    xml_path = os.path.join(_get_styles_base_path(), standard_name, "TitleStyles.xml")
     root = _parse_xml_file(xml_path)
     styles = []
     default_style = None
@@ -83,7 +119,7 @@ def _get_title_styles(standard_name):
 
 
 def _get_bom_styles(standard_name):
-    xml_path = os.path.join(STYLES_BASE_PATH, standard_name, "BomStyles.xml")
+    xml_path = os.path.join(_get_styles_base_path(), standard_name, "BomStyles.xml")
     root = _parse_xml_file(xml_path)
     styles = []
     default_style = None
@@ -99,7 +135,7 @@ def _get_bom_styles(standard_name):
 
 
 def _get_frame_styles(standard_name, frame_size, orientation):
-    xml_path = os.path.join(STYLES_BASE_PATH, standard_name, "FrameStyles.xml")
+    xml_path = os.path.join(_get_styles_base_path(), standard_name, "FrameStyles.xml")
     root = _parse_xml_file(xml_path)
     for frame_size_elem in root.findall('.//FrameSize'):
         if frame_size_elem.get('Name') == frame_size:
@@ -110,7 +146,7 @@ def _get_frame_styles(standard_name, frame_size, orientation):
 
 
 def _get_default_frame_size(standard_name):
-    xml_path = os.path.join(STYLES_BASE_PATH, standard_name, "FrameStyles.xml")
+    xml_path = os.path.join(_get_styles_base_path(), standard_name, "FrameStyles.xml")
     root = _parse_xml_file(xml_path)
     for frame_size_elem in root.iter():
         if frame_size_elem.tag.endswith('FrameSize') or frame_size_elem.tag == 'FrameSize':
@@ -141,8 +177,9 @@ def get_cad_connection():
 
 def reset_cad_connection():
     """清除连接缓存，下次 get_cad_connection 将创建新连接。"""
-    global _cad_conn_cache
+    global _cad_conn_cache, _styles_base_path_cache
     _cad_conn_cache = None
+    _styles_base_path_cache = None
 
 
 def _ok(message: str = None, **data) -> dict:
