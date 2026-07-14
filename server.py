@@ -155,7 +155,12 @@ def _typelib_state():
     """返回 (loaded, source, error)：ZwmToolKit 类型库加载状态。"""
     try:
         from pyzwcadmech import api as _zwm_api
-        return _zwm_api.ZWM is not None, _zwm_api.TYPELIB_SOURCE, _zwm_api.TYPELIB_ERROR
+        loaded = getattr(_zwm_api, "ZWM", None) is not None
+        source = getattr(_zwm_api, "TYPELIB_SOURCE", None)
+        if source is None and loaded:
+            source = getattr(_zwm_api, "tlb_path", None) or getattr(_zwm_api, "found_tlb", None) or "loaded"
+        tlb_err = getattr(_zwm_api, "TYPELIB_ERROR", None)
+        return loaded, source, tlb_err
     except Exception as exc:
         return False, None, str(exc)
 
