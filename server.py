@@ -164,7 +164,15 @@ _cad_conn_cache = None
 def get_cad_connection():
     global _cad_conn_cache
     if _cad_conn_cache is not None:
-        return _cad_conn_cache
+        try:
+            # 健康检查：确认缓存的 zcad_conn 仍可访问 ModelSpace。
+            # comtypes 的 ZWCAD.Application 代理在长期运行后会失效
+            # (CO_E_OBJNOTCONNECTED -2147220995)，导致 doc/model 不可用，
+            # 表现为绘图类工具报“对象没有连接到服务器”而应用层工具仍正常。
+            _ = _cad_conn_cache[0].model.Count
+            return _cad_conn_cache
+        except Exception:
+            _cad_conn_cache = None
     try:
         pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
     except Exception:
@@ -1361,7 +1369,7 @@ def manage_style(style_type: str, action: str, name: str = None,
             if action == "list":
                 layers = []
                 detail = (properties or {}).get("detail", False)
-                for lay in zcad_conn.iter_layers():
+                for lay in zcad_conn.doc.Layers:
                     info = {"name": lay.Name, "color": lay.color}
                     if detail:
                         info.update({"on": lay.LayerOn, "linetype": lay.Linetype,
