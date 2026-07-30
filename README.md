@@ -1,4 +1,4 @@
-﻿﻿# ZWCAD机械版 MCP Server
+﻿# ZWCAD机械版 MCP Server
 
 [中文](#zwcad-mechanical-mcp-server) | [English](#english)
 
@@ -34,10 +34,10 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 图框 | 2 | `manage_frame`、`create_frame` |
 | 明细表 | 1 | `manage_bom` |
 | 机械数据库 | 1 | `manage_mech_db` |
-| 机械应用 | 3 | `mech_doc`、`cad_environment_init`、`get_balloon` |
+| 机械应用 | 4 | `mech_doc`、`cad_environment_init`、`get_balloon`、`insert_balloon` |
 | 扩展数据 | 3 | `manage_dictionary`、`manage_xdata`、`manage_utility` |
 
-**共计 34 个工具**
+**共计 35 个工具**
 
 ## 系统要求
 
@@ -214,6 +214,7 @@ start.bat
 | `mech_doc` | 机械文档操作。action: `open`/`new`/`new_named` |
 | `cad_environment_init` | 初始化CAD标准环境（GB, ISO, DIN等） |
 | `get_balloon` | 获取球标对象用于零件编号标注 |
+| `insert_balloon` | 插入球标（零件序号标注），通过 LISP 命令 Zwm_BalloonInsert 实现。参数: 箭头位置/符号位置/文字/序号类型(0-6)/是否带引线 |
 
 > 以上工具不依赖类型库，在类型库未加载时仍可通过 late binding 正常工作。
 
@@ -273,7 +274,7 @@ start.bat
 | `manage_frame`（get_info/update） | ❌ 不可用 | 返回错误并附带修复提示 |
 | `manage_bom`（refresh） | ✅ 可用 | 通过 late binding 工作 |
 | `manage_frame`（list/switch/refresh 等） | ✅ 可用 | 通过 late binding 工作 |
-| `manage_mech_db` / `mech_doc` / `cad_environment_init` / `get_balloon` | ✅ 可用 | 通过 late binding 工作 |
+| `manage_mech_db` / `mech_doc` / `cad_environment_init` / `get_balloon` / `insert_balloon` | ✅ 可用 | 通过 late binding 工作 |
 | `get_app_info`（mech_* scope） | ✅ 可用 | 通过 late binding 工作 |
 | 所有 pyzwcad 基础工具（绘图/标注/变换/查询等） | ✅ 可用 | 完全不依赖类型库 |
 
@@ -316,7 +317,7 @@ AI Client (Cursor/Claude/Qoder)
         │
         │ MCP Protocol (STDIO)
         ▼
-   FastMCP Server (server.py, 34 tools)
+   FastMCP Server (server.py, 35 tools)
         │
         ├── pyzwcad ──────► ZWCAD.Application COM API (基础绘图/标注/变换/查询)
         │                   └── 不依赖类型库，始终可用
@@ -393,10 +394,10 @@ A ZWCAD Mechanical CAD automation MCP service that allows AI models to directly 
 | Frame | 2 | `manage_frame`, `create_frame` |
 | BOM | 1 | `manage_bom` |
 | Mech Database | 1 | `manage_mech_db` |
-| Mech App | 3 | `mech_doc`, `cad_environment_init`, `get_balloon` |
+| Mech App | 4 | `mech_doc`, `cad_environment_init`, `get_balloon`, `insert_balloon` |
 | Extended Data | 3 | `manage_dictionary`, `manage_xdata`, `manage_utility` |
 
-**Total: 34 tools**
+**Total: 35 tools**
 
 ## System Requirements
 
@@ -571,6 +572,7 @@ Refer to `mcp-config.json` for configuration.
 | `mech_doc` | Mechanical document operations. action: `open`/`new`/`new_named` |
 | `cad_environment_init` | Initialize CAD standard environment (GB, ISO, DIN, etc.) |
 | `get_balloon` | Get balloon object for part numbering |
+| `insert_balloon` | Insert balloon (part number annotation) via LISP command Zwm_BalloonInsert. Params: arrow point/symbol point/text/seq type(0-6)/leader |
 
 > These tools work without type library via late binding.
 
@@ -626,7 +628,7 @@ If automatic loading fails (e.g., custom install path), set the environment vari
 | `manage_frame` (get_info/update) | ❌ Unavailable | Returns error with fix hint |
 | `manage_bom` (refresh) | ✅ Available | Works via late binding |
 | `manage_frame` (list/switch/refresh etc.) | ✅ Available | Works via late binding |
-| `manage_mech_db` / `mech_doc` / `cad_environment_init` / `get_balloon` | ✅ Available | Works via late binding |
+| `manage_mech_db` / `mech_doc` / `cad_environment_init` / `get_balloon` / `insert_balloon` | ✅ Available | Works via late binding |
 | `get_app_info` (mech_* scope) | ✅ Available | Works via late binding |
 | All pyzwcad basic tools (drawing/annotation/transform/query etc.) | ✅ Available | No type library dependency |
 
@@ -652,7 +654,7 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server main program (34 tools)
+├── server.py                 # MCP Server main program (35 tools)
 ├── requirements.txt          # Python dependencies
 ├── mcp-config.json           # MCP client configuration example
 ├── start.bat                 # Windows one-click launcher

@@ -11,7 +11,8 @@
         "get_objects_in_model",
         "get_variable",
         "get_app_info",
-        "get_balloon"
+        "get_balloon",
+        "insert_balloon"
       ]
     }
   }

@@ -2345,6 +2345,68 @@ def get_balloon(text: str = "") -> dict:
 
 
 @mcp.tool
+def insert_balloon(
+    arrow_x: float = 100.0,
+    arrow_y: float = 100.0,
+    arrow_z: float = 0.0,
+    symbol_x: float = 155.0,
+    symbol_y: float = 155.0,
+    symbol_z: float = 0.0,
+    text: str = "3",
+    seq_type: int = 2,
+    has_leader: bool = False,
+    mode: int = 0,
+) -> dict:
+    """插入球标（零件序号标注）。通过向命令行发送 LISP 命令 Zwm_BalloonInsert 实现。
+
+    参数:
+    - arrow_x/y/z: 箭头位置坐标
+    - symbol_x/y/z: 标注符号位置坐标
+    - text: 球标文字内容
+    - seq_type: 序号类型 0-6，对应前7种序号类型
+    - has_leader: 是否带引线 (True=带引线, False=不带引线)
+    - mode: 球标插入模式（LISP 列表首元素），默认 0
+
+    LISP 命令格式:
+    (Zwm_BalloonInsert (list <mode> (list ax ay az) (list sx sy sz) "text" seq_type leader))
+    """
+    try:
+        zcad_conn, _ = get_cad_connection()
+
+        if not (0 <= seq_type <= 6):
+            return _err("插入球标", ValueError(f"序号类型 seq_type 必须为 0-6，当前值: {seq_type}"))
+
+        def _fmt_coord(v):
+            """格式化坐标值为 LISP 兼容的实数字符串。"""
+            v = float(v)
+            return f"{v:.1f}" if v == int(v) else repr(v)
+
+        leader_val = 1 if has_leader else 0
+        lisp = (
+            f"(Zwm_BalloonInsert (list {mode} "
+            f"(list {_fmt_coord(arrow_x)} {_fmt_coord(arrow_y)} {_fmt_coord(arrow_z)}) "
+            f"(list {_fmt_coord(symbol_x)} {_fmt_coord(symbol_y)} {_fmt_coord(symbol_z)}) "
+            f'"{text}" {seq_type} {leader_val}))'
+        )
+        # \x03 = ESC（发送两次取消当前命令），\r = 回车执行
+        cmd = "\x03\x03" + lisp + "\r"
+        zcad_conn.doc.SendCommand(cmd)
+
+        return _ok(
+            f"成功插入球标: {text}",
+            command=lisp,
+            arrow_point=[arrow_x, arrow_y, arrow_z],
+            symbol_point=[symbol_x, symbol_y, symbol_z],
+            text=text,
+            seq_type=seq_type,
+            has_leader=has_leader,
+            mode=mode,
+        )
+    except Exception as e:
+        return _err("插入球标", e)
+
+
+@mcp.tool
 def create_frame(
     std_name: str = None,
     frame_size_name: str = None,
