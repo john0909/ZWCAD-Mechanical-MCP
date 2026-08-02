@@ -2179,7 +2179,12 @@ def manage_bom(action: str, params: dict = None) -> dict:
     get_row:{row_index} | add_row:{data:{name:val,...}}
     update_row:{row_index,data:{...}} | insert_row:{index,data:{...}}
     delete_row:{index} | set_field:{row_index,field_key,value}
-    get_field:{row_index,field_index} | get_field_count:{row_index}"""
+    get_field:{row_index,field_index} | get_field_count:{row_index}
+    batch_update:{rows:[{row_index,data:{...}},...]}
+
+    持久化说明: 修改BOM数据后，内部自动调用refresh_bom()将更改写入DWG图纸。
+    请勿在BOM修改后调用manage_mech_db的save操作，save会从图纸重载数据导致修改丢失。
+    如需保存DWG文件到磁盘，请使用manage_document的save操作。"""
     try:
         _, mech_conn = get_cad_connection()
         mech_conn.open_file("")
@@ -2225,6 +2230,7 @@ def manage_bom(action: str, params: dict = None) -> dict:
                 return _err("明细表操作", ValueError(f"未找到索引 {p['row_index']} 的行"))
             for field_name, value in p["data"].items():
                 row.set_item(field_name, value)
+            bom.set_item(p["row_index"], row)
             mech_conn.zwm_db.refresh_bom()
             return _ok(f"成功更新明细表行 {p['row_index']}: {p['data']}")
 
@@ -2246,6 +2252,7 @@ def manage_bom(action: str, params: dict = None) -> dict:
             if not row:
                 return _err("明细表操作", ValueError(f"未找到索引 {p['row_index']} 的行"))
             row.set_item(p["field_key"], p["value"])
+            bom.set_item(p["row_index"], row)
             mech_conn.zwm_db.refresh_bom()
             return _ok(f"成功设置行 {p['row_index']} 的字段 '{p['field_key']}' = '{p['value']}'")
 
@@ -2266,14 +2273,53 @@ def manage_bom(action: str, params: dict = None) -> dict:
             count = row.get_item_count()
             return _ok("获取明细表字段数量成功", row_index=p["row_index"], count=count)
 
+        elif action == "batch_update":
+            rows_data = p.get("rows", [])
+            if not rows_data:
+                return _err("明细表操作", ValueError("batch_update需要rows参数: [{row_index, data:{...}}, ...]"))
+            updated = 0
+            failed = []
+            for item in rows_data:
+                ri = item["row_index"]
+                row = bom.get_item(ri)
+                if not row:
+                    failed.append({"row_index": ri, "error": "行不存在"})
+                    continue
+                for field_name, value in item.get("data", {}).items():
+                    row.set_item(field_name, value)
+                bom.set_item(ri, row)
+                updated += 1
+            mech_conn.zwm_db.refresh_bom()
+            return _ok(f"批量更新完成: 成功{updated}行", updated=updated, failed=failed)
+
         return _err("明细表操作", ValueError(f"不支持的操作: {action}"))
     except Exception as e:
         return _err(f"明细表操作({action})", e)
 
 
+
+@mcp.tool
+def create_partlist() -> dict:
+    """创建明细表实体。通过向命令行发送 ZwmPartlist 命令实现。
+
+    当图纸中尚无明细表时调用此工具创建。参考官方SDK FormBom.cs，
+    命令格式为 _.ZwmPartlist（下划线=语言无关，点=强制内置命令）。
+    """
+    try:
+        _, mech_conn = get_cad_connection()
+        mech_conn.zwm_app.send_command("_.ZwmPartlist\n")
+        return _ok("成功创建明细表")
+    except Exception as e:
+        return _err("创建明细表", e)
+
+
 @mcp.tool
 def manage_mech_db(action: str, params: dict = None) -> dict:
-    """机械模块数据库操作。action: open({[file_path]})|save({[flag]})|close。"""
+    """机械模块数据库操作。action: open({[file_path]})|save({[flag]})|close。
+
+    注意: save操作用于保存机械模块数据库到文件，其参数dwgVer为图纸版本号(默认33)。
+    修改BOM/标题栏/图框后请使用各自的refresh方法(如manage_bom的refresh)持久化，
+    不要调用save，因为save会从图纸重载数据导致修改丢失。"""
     try:
         _, mech_conn = get_cad_connection()
         p = params or {}

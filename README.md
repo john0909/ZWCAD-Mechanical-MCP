@@ -32,12 +32,12 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 诊断工具 | 1 | `mech_diagnose`（机械模块连接与类型库诊断）|
 | 标题栏 | 1 | `manage_title_block` |
 | 图框 | 2 | `manage_frame`、`create_frame` |
-| 明细表 | 1 | `manage_bom` |
+| 明细表 | 2 | `manage_bom`、`create_partlist` |
 | 机械数据库 | 1 | `manage_mech_db` |
 | 机械应用 | 4 | `mech_doc`、`cad_environment_init`、`get_balloon`、`insert_balloon` |
 | 扩展数据 | 3 | `manage_dictionary`、`manage_xdata`、`manage_utility` |
 
-**共计 35 个工具**
+**共计 36 个工具**
 
 ## 系统要求
 
@@ -202,9 +202,12 @@ start.bat
 
 | 工具 | 说明 | action |
 |------|------|--------|
-| `manage_bom` | 明细表增删改查 | `get_row_count`, `get_row`, `add_row`, `update_row`, `insert_row`, `delete_row`, `set_field`, `get_field`, `get_field_count`, `refresh` |
+| `manage_bom` | 明细表增删改查 | `get_row_count`, `get_row`, `add_row`, `update_row`, `insert_row`, `delete_row`, `set_field`, `get_field`, `get_field_count`, `batch_update`, `refresh` |
+| `create_partlist` | 创建明细表实体 | 发送 `_.ZwmPartlist` 命令 |
 
 > ⚠️ 除 `refresh` 外的所有操作依赖类型库。`refresh` 不依赖类型库，在类型库未加载时仍可使用。
+>
+> 💡 **BOM 持久化说明**：修改 BOM 数据后，`update_row`/`set_field`/`batch_update` 等操作会自动调用 `refresh_bom()` 将更改写入 DWG 图纸。请勿在 BOM 修改后调用 `manage_mech_db` 的 `save` 操作，`save` 会从图纸重载数据导致修改丢失。
 
 ### 机械模块
 
@@ -300,7 +303,7 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server 主程序（34个工具）
+├── server.py                 # MCP Server 主程序（36个工具）
 ├── requirements.txt          # Python 依赖
 ├── mcp-config.json           # MCP 客户端配置示例
 ├── start.bat                 # Windows 一键启动脚本
@@ -317,7 +320,7 @@ AI Client (Cursor/Claude/Qoder)
         │
         │ MCP Protocol (STDIO)
         ▼
-   FastMCP Server (server.py, 35 tools)
+   FastMCP Server (server.py, 36 tools)
         │
         ├── pyzwcad ──────► ZWCAD.Application COM API (基础绘图/标注/变换/查询)
         │                   └── 不依赖类型库，始终可用
@@ -357,7 +360,7 @@ AI Client (Cursor/Claude/Qoder)
 ## 依赖
 
 - [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD/AutoCAD Python COM 封装
-- [pyzwcadmech](https://github.com/john0909/pyzwcadmech) - 中望机械 Python COM 封装
+- [pyzwcadmech](https://pypi.org/project/pyzwcadmech/) >=0.3.0 - 中望机械 Python COM 封装（含 BOM 读写修复）
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP 协议服务框架
 - [comtypes](https://github.com/enthought/comtypes) - COM 类型库加载与接口调用
 - [pywin32](https://github.com/mhammond/pywin32) - Windows COM 初始化支持
@@ -392,12 +395,12 @@ A ZWCAD Mechanical CAD automation MCP service that allows AI models to directly 
 | Diagnostics | 1 | `mech_diagnose` (mechanical module & typelib diagnostics) |
 | Title Block | 1 | `manage_title_block` |
 | Frame | 2 | `manage_frame`, `create_frame` |
-| BOM | 1 | `manage_bom` |
+| BOM | 2 | `manage_bom`, `create_partlist` |
 | Mech Database | 1 | `manage_mech_db` |
 | Mech App | 4 | `mech_doc`, `cad_environment_init`, `get_balloon`, `insert_balloon` |
 | Extended Data | 3 | `manage_dictionary`, `manage_xdata`, `manage_utility` |
 
-**Total: 35 tools**
+**Total: 36 tools**
 
 ## System Requirements
 
@@ -560,9 +563,12 @@ Refer to `mcp-config.json` for configuration.
 
 | Tool | Description | action |
 |------|-------------|--------|
-| `manage_bom` | BOM CRUD operations | `get_row_count`, `get_row`, `add_row`, `update_row`, `insert_row`, `delete_row`, `set_field`, `get_field`, `get_field_count`, `refresh` |
+| `manage_bom` | BOM CRUD operations | `get_row_count`, `get_row`, `add_row`, `update_row`, `insert_row`, `delete_row`, `set_field`, `get_field`, `get_field_count`, `batch_update`, `refresh` |
+| `create_partlist` | Create parts list entity | Sends `_.ZwmPartlist` command |
 
 > ⚠️ All actions except `refresh` require type library. `refresh` works without it.
+>
+> 💡 **BOM Persistence**: After modifying BOM data, `update_row`/`set_field`/`batch_update` automatically call `refresh_bom()` to write changes to the DWG. Do NOT call `manage_mech_db`'s `save` after BOM modifications, as `save` reloads data from the drawing and discards changes.
 
 ### Mechanical Module
 
@@ -654,7 +660,7 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server main program (35 tools)
+├── server.py                 # MCP Server main program (36 tools)
 ├── requirements.txt          # Python dependencies
 ├── mcp-config.json           # MCP client configuration example
 ├── start.bat                 # Windows one-click launcher
@@ -671,7 +677,7 @@ AI Client (Cursor/Claude/Qoder)
         │
         │ MCP Protocol (STDIO)
         ▼
-   FastMCP Server (server.py, 34 tools)
+   FastMCP Server (server.py, 36 tools)
         │
         ├── pyzwcad ──────► ZWCAD.Application COM API (basic drawing)
         │                   └── No type library dependency, always available
@@ -711,7 +717,7 @@ AI Client (Cursor/Claude/Qoder)
 ## Dependencies
 
 - [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD/AutoCAD Python COM wrapper
-- [pyzwcadmech](https://github.com/john0909/pyzwcadmech) - ZWCAD MFG Python COM wrapper
+- [pyzwcadmech](https://pypi.org/project/pyzwcadmech/) >=0.3.0 - ZWCAD MFG Python COM wrapper (includes BOM read/write fixes)
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP protocol server framework
 - [comtypes](https://github.com/enthought/comtypes) - COM type library loading and interface invocation
 - [pywin32](https://github.com/mhammond/pywin32) - Windows COM initialization support
