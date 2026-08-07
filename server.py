@@ -248,19 +248,158 @@ def _err(action: str, e: Exception) -> dict:
 def _find_entity(zcad_conn, object_type: str = None,
                  property_name: str = None, property_value: str = None,
                  handle: str = None, predicate=None):
+    """定位单个实体。优先级：handle(O(1)) > 原生DXF选择过滤 > 类型预过滤+小批量谓词 > 全图迭代。
+    原生过滤把筛选下推到 CAD 引擎，大幅减少跨进程 COM 调用。"""
     if handle:
         try:
             return zcad_conn.doc.HandleToObject(handle)
         except Exception:
             return None
-    if predicate:
+
+    has_prop = property_name is not None and property_value is not None
+    prop_mappable = has_prop and property_name in _PROP_FILTER_MAP
+    dxf_type = _normalize_entity_type(object_type)
+
+    ft, fd = _build_locate_filter(object_type, property_name, property_value)
+    if ft is not None:
+        sel = _select_by_filter(zcad_conn, ft, fd, "_mcp_find_tmp")
+        # 过滤条件是否已完整覆盖查询意图：
+        #   无 predicate，且（无属性 或 属性可映射）时，过滤结果即最终结果
+        fully_covered = (predicate is None) and ((not has_prop) or prop_mappable)
+        if fully_covered:
+            if sel is not None and sel.Count > 0:
+                try:
+                    return sel.Item(0)
+                except Exception:
+                    pass
+            return None
+        # 类型可映射但仍有不可映射的属性/谓词：在缩小的结果集中小批量校验
+        obj = _find_in_selection(sel, predicate, property_name, property_value)
+        if obj is not None:
+            return obj
+        return None  # 类型范围内已穷举，无需回退到全图迭代
+
+    if predicate is not None:
         return zcad_conn.find_one(object_type, predicate=predicate)
-    if property_name and property_value is not None:
+    if has_prop:
+        _pn, _pv = property_name, property_value
         def _prop_pred(obj):
-            if hasattr(obj, property_name):
-                return str(getattr(obj, property_name)) == str(property_value)
+            if hasattr(obj, _pn):
+                return str(getattr(obj, _pn)) == str(_pv)
             return False
         return zcad_conn.find_one(object_type, predicate=_prop_pred)
+    if object_type:
+        return zcad_conn.find_one(object_type)
+    return None
+
+
+# 实体类型标识 -> DXF group code 0 标准名称（兼容 AcDb 前缀/大小写/常见别名）
+_DXF_ENTITY_MAP = {
+    "line": "LINE", "acdbline": "LINE",
+    "circle": "CIRCLE", "acdbcircle": "CIRCLE",
+    "arc": "ARC", "acdbarc": "ARC",
+    "ellipse": "ELLIPSE", "acdbellipse": "ELLIPSE",
+    "spline": "SPLINE", "acdbspline": "SPLINE",
+    "polyline": "POLYLINE", "acdbpolyline": "POLYLINE",
+    "lwpolyline": "LWPOLYLINE", "acdblwpolyline": "LWPOLYLINE",
+    "text": "TEXT", "acdbtext": "TEXT",
+    "mtext": "MTEXT", "acdbmtext": "MTEXT",
+    "insert": "INSERT", "blockref": "INSERT", "blockreference": "INSERT",
+    "acdbblockreference": "INSERT",
+    "dimension": "DIMENSION", "acdbdimension": "DIMENSION",
+    "point": "POINT", "acdbpoint": "POINT",
+    "hatch": "HATCH", "acdbhatch": "HATCH",
+    "leader": "LEADER", "acdbleader": "LEADER",
+    "mleader": "MLEADER", "acdbmleader": "MLEADER",
+    "ray": "RAY", "acdbray": "RAY",
+    "xline": "XLINE", "acdbxline": "XLINE",
+    "table": "TABLE", "acdbtable": "TABLE",
+    "attdef": "ATTDEF", "acdbattdef": "ATTDEF",
+    "attribute": "ATTRIBUTE", "acdbattribute": "ATTRIBUTE",
+    "solid": "SOLID", "acdbsolid": "SOLID",
+    "3dface": "3DFACE", "acdb3dface": "3DFACE",
+    "trace": "TRACE", "acdbtrace": "TRACE",
+}
+
+
+def _normalize_entity_type(object_type):
+    """将实体类型标识归一化为 DXF group code 0 标准名称。
+    支持 AcDb 前缀、大小写。无法映射返回 None（调用方需回退到子串迭代）。"""
+    if not object_type:
+        return None
+    key = object_type.strip().lower()
+    if key in _DXF_ENTITY_MAP:
+        return _DXF_ENTITY_MAP[key]
+    if key.startswith("acdb") and key[4:] in _DXF_ENTITY_MAP:
+        return _DXF_ENTITY_MAP[key[4:]]
+    return None
+
+
+# 属性名 -> (DXF group code, _build_filter 字段名)
+# 这些属性可被原生选择过滤器直接处理，无需 Python 逐个读取比对。
+_PROP_FILTER_MAP = {
+    "Layer": (8, "layer"),
+    "Color": (62, "color"),
+    "Linetype": (6, "linetype"),
+    "TextStyle": (7, "textstyle"),
+    "StyleName": (7, "textstyle"),
+    "Textstyle": (7, "textstyle"),
+}
+
+
+def _build_locate_filter(object_type, property_name, property_value):
+    """为定位查询（find_object/get_entity_info 等）构建 DXF 选择过滤器。
+    返回 (FilterType, FilterData)，无可用条件返回 (None, None)。
+    若指定了类型但无法映射为 DXF 名，则整体放弃原生过滤（避免忽略类型条件）。"""
+    dxf_type = _normalize_entity_type(object_type)
+    if object_type and not dxf_type:
+        return None, None
+    criteria = {}
+    if dxf_type:
+        criteria["entity_type"] = dxf_type
+    prop = _PROP_FILTER_MAP.get(property_name) if property_name else None
+    if prop and property_value is not None:
+        code, field = prop
+        # 标注的 StyleName 是标注样式(DXF group 3), 而非文字样式(group 7)
+        if property_name == "StyleName" and dxf_type == "DIMENSION":
+            code, field = 3, "dimstyle"
+        val = property_value
+        if code == 62:  # color 期望整数
+            try:
+                val = int(property_value)
+            except (ValueError, TypeError):
+                pass
+        criteria[field] = val
+    return _build_filter(criteria)
+
+
+def _find_in_selection(sel, predicate=None, property_name=None, property_value=None):
+    """在已原生过滤的选择集中，按谓词或属性值找首个匹配实体。
+    适用于「类型已过滤、但属性不可映射需逐个校验」的小批量场景。"""
+    if sel is None or sel.Count == 0:
+        return None
+    use_prop = (property_name is not None and property_value is not None
+                and predicate is None)
+    for i in range(sel.Count):
+        try:
+            obj = sel.Item(i)
+        except Exception:
+            continue
+        if predicate is not None:
+            try:
+                if predicate(obj):
+                    return obj
+            except Exception:
+                continue
+        elif use_prop:
+            try:
+                if hasattr(obj, property_name) and \
+                        str(getattr(obj, property_name)) == str(property_value):
+                    return obj
+            except Exception:
+                continue
+        else:
+            return obj  # 无附加条件，取首条
     return None
 
 
@@ -287,7 +426,6 @@ def _check_params(params: dict, required: list, context: str) -> dict:
     if missing:
         return _err(context, ValueError(f"缺少必需参数: {', '.join(missing)}"))
     return None
-
 
 
 # ============================================================
@@ -785,7 +923,6 @@ def _apply_dim_extras(obj, p):
     return updated
 
 
-
 # ============================================================
 # 注释内部实现
 # ============================================================
@@ -1197,6 +1334,166 @@ def add_dimension(dim_type: str, params: dict, layer: str = "0") -> dict:
         return _err(f"添加{dim_type}标注", e)
 
 
+# 标注 ObjectName -> 中文名
+_DIM_TYPE_CN = {
+    "AcDbAlignedDimension": "对齐标注",
+    "AcDbRotatedDimension": "线性标注",
+    "AcDbDiametricDimension": "直径标注",
+    "AcDbRadialDimension": "半径标注",
+    "AcDbArcDimension": "弧长标注",
+    "AcDbAngularDimension": "角度标注",
+    "AcDb3PointAngularDimension": "三点角度标注",
+    "AcDbOrdinateDimension": "坐标标注",
+    "AcDbDimension": "标注(通用)",
+}
+
+# ToleranceDisplay 值 -> 中文名 (0=无 1=对称 2=偏差 3=极限 4=基本)
+_TOL_DISPLAY_CN = {0: "无", 1: "对称", 2: "偏差", 3: "极限", 4: "基本"}
+
+
+def _read_dimension(obj, full=False):
+    """从单个标注 COM 对象读取属性，返回 dict。
+    full=True 时返回完整属性(公差/文字位置/几何关键点等)；否则仅返回关键信息。"""
+    name = getattr(obj, "ObjectName", "")
+    d = {
+        "handle": getattr(obj, "Handle", "?"),
+        "type": name,
+        "type_cn": _DIM_TYPE_CN.get(name, name),
+        "layer": getattr(obj, "Layer", "?"),
+    }
+    # 尺寸测量值(角度标注为度, 其余为毫米)
+    try:
+        m = obj.Measurement
+        if "Angular" in name:
+            d["measurement"] = round(math.degrees(m), 4)
+            d["measurement_unit"] = "deg"
+        else:
+            d["measurement"] = round(m, 4)
+            d["measurement_unit"] = "mm"
+    except Exception:
+        d["measurement"] = None
+        d["measurement_unit"] = None
+    try: d["text_override"] = obj.TextOverride or ""
+    except Exception: d["text_override"] = ""
+    try: d["text_string"] = obj.TextString or ""
+    except Exception: d["text_string"] = ""
+    try: d["style_name"] = obj.StyleName or ""
+    except Exception: d["style_name"] = ""
+    # 公差显示标记(summary 也带, 便于统计)
+    try: d["tolerance_display"] = obj.ToleranceDisplay
+    except Exception: d["tolerance_display"] = None
+
+    if full:
+        try:
+            tp = obj.TextPosition
+            d["text_position"] = [round(tp[0], 3), round(tp[1], 3), round(tp[2], 3)]
+        except Exception: d["text_position"] = None
+        try: d["text_rotation"] = round(math.degrees(obj.TextRotation), 2)
+        except Exception: d["text_rotation"] = None
+        try: d["text_prefix"] = obj.TextPrefix or ""
+        except Exception: d["text_prefix"] = ""
+        try: d["text_suffix"] = obj.TextSuffix or ""
+        except Exception: d["text_suffix"] = ""
+        # 公差细节: COM 中 ToleranceLowerLimit 为正值表示下偏差为负, 需取反还原工程符号
+        d["tolerance_display_cn"] = _TOL_DISPLAY_CN.get(
+            d["tolerance_display"], str(d["tolerance_display"]))
+        try: d["tolerance_upper"] = obj.ToleranceUpperLimit
+        except Exception: d["tolerance_upper"] = None
+        try: d["tolerance_lower"] = -obj.ToleranceLowerLimit
+        except Exception: d["tolerance_lower"] = None
+        try: d["tolerance_precision"] = obj.TolerancePrecision
+        except Exception: d["tolerance_precision"] = None
+        try: d["tolerance_height_scale"] = obj.ToleranceHeightScale
+        except Exception: d["tolerance_height_scale"] = None
+        try: d["color"] = obj.Color
+        except Exception: pass
+        try: d["linetype"] = obj.Linetype
+        except Exception: pass
+        try: d["linetype_scale"] = obj.LinetypeScale
+        except Exception: pass
+        try:
+            if "Rotated" in name or "Aligned" in name:
+                sp = obj.ExtLine1Point; ep = obj.ExtLine2Point
+                d["ext_line1"] = [round(sp[0], 3), round(sp[1], 3)]
+                d["ext_line2"] = [round(ep[0], 3), round(ep[1], 3)]
+            elif "Diametric" in name or "Radial" in name:
+                c = obj.Center
+                d["center"] = [round(c[0], 3), round(c[1], 3)]
+                try:
+                    cp = obj.ChordPoint
+                    d["chord_point"] = [round(cp[0], 3), round(cp[1], 3)]
+                except Exception: d["chord_point"] = None
+            elif "Angular" in name:
+                try:
+                    v = obj.VertexPoint
+                    d["vertex"] = [round(v[0], 3), round(v[1], 3)]
+                except Exception: pass
+        except Exception: pass
+    return d
+
+
+@mcp.tool
+def query_dimensions(detail: str = "summary", layer: str = None) -> dict:
+    """快速查询当前图纸中所有标注(尺寸)信息。
+    优先使用原生 DXF 选择过滤器，
+    过滤失败时回退到 iter_objects 子串匹配。
+
+    参数:
+    - detail: summary(默认, 返回关键信息) | full(返回完整属性, 含公差/文字位置/几何点等)
+    - layer: 可选, 仅查询指定图层的标注; 为空则查询全部图层
+
+    返回:
+    - total: 标注总数
+    - summary: 按类型/是否有公差/是否有文字覆盖 的统计
+    - data: 标注列表, 每项含 handle/type/type_cn/layer/measurement/measurement_unit/
+            text_override/text_string/style_name 等(full 模式额外含公差与几何信息)
+    """
+    try:
+        logger.info("tool_call query_dimensions detail=%s layer=%s", detail, layer)
+        zcad_conn, _ = get_cad_connection()
+        full = (detail == "full")
+
+        criteria = {"entity_type": "DIMENSION"}
+        if layer:
+            criteria["layer"] = layer
+        ft, fd = _build_filter(criteria)
+        sel = _select_by_filter(zcad_conn, ft, fd, "_mcp_dim_query")
+
+        dims = []
+        if sel is not None and sel.Count > 0:
+            for i in range(sel.Count):
+                dims.append(_read_dimension(sel.Item(i), full))
+        else:
+            for obj in zcad_conn.iter_objects(limit=10000):
+                name = getattr(obj, "ObjectName", "")
+                if "Dim" not in name:
+                    continue
+                if layer and getattr(obj, "Layer", "") != layer:
+                    continue
+                dims.append(_read_dimension(obj, full))
+
+        by_type = {}
+        with_tol = 0
+        with_override = 0
+        for d in dims:
+            t = d.get("type_cn", d.get("type", "?"))
+            by_type[t] = by_type.get(t, 0) + 1
+            if d.get("tolerance_display") not in (None, 0):
+                with_tol += 1
+            if d.get("text_override"):
+                with_override += 1
+
+        return _ok(
+            f"查询到 {len(dims)} 个标注",
+            total=len(dims),
+            summary={"by_type": by_type, "with_tolerance": with_tol,
+                     "with_text_override": with_override},
+            data=dims,
+        )
+    except Exception as e:
+        return _err("查询标注", e)
+
+
 @mcp.tool
 def insert_block(block_name: str, x: float, y: float, z: float = 0,
                  x_scale: float = 1.0, y_scale: float = 1.0, z_scale: float = 1.0,
@@ -1386,7 +1683,8 @@ def set_entity_properties(layer: str = None, color: int = None,
 @mcp.tool
 def find_object(object_type: str = None, property_name: str = None,
                 property_value: str = None, handle: str = None) -> dict:
-    """查找符合条件的第一个对象。定位参数同transform_entity。"""
+    """查找符合条件的第一个对象。定位参数同transform_entity。
+    优先 handle(O(1)) > 原生DXF过滤 > 类型预过滤+小批量谓词。结果回传handle便于后续直接定位。"""
     try:
         zcad_conn, _ = get_cad_connection()
         obj = _find_entity(zcad_conn, object_type=object_type,
@@ -1407,10 +1705,22 @@ def find_object(object_type: str = None, property_name: str = None,
 
 @mcp.tool
 def get_objects_in_model(object_type: str = None, limit: int = 500) -> dict:
-    """获取模型空间中的对象列表。object_type可选过滤，limit默认500。"""
+    """获取模型空间中的对象列表。object_type可选过滤，limit默认500。
+    优先使用原生 DXF 选择过滤器；类型不可映射时回退迭代。"""
     try:
         zcad_conn, _ = get_cad_connection()
         objects = []
+        dxf_type = _normalize_entity_type(object_type)
+        if dxf_type:
+            ft, fd = _build_filter({"entity_type": dxf_type})
+            sel = _select_by_filter(zcad_conn, ft, fd, "_mcp_list_tmp")
+            if sel is not None and sel.Count > 0:
+                objects = _selection_set_items(sel, limit)
+                total = sel.Count
+                return _ok(total_count=len(objects),
+                           truncated=(total > len(objects)), data=objects)
+            return _ok(total_count=0, truncated=False, data=[])
+        # 类型不可映射：回退到 iter_objects（子串匹配）
         count = 0
         for obj in zcad_conn.iter_objects(object_type, limit=limit):
             obj_info = {"object_name": obj.ObjectName}
@@ -1822,22 +2132,50 @@ def _selection_set_items(sel, max_items=200):
 
 
 def _build_filter(filter_criteria):
+    """根据过滤条件构建 DXF 选择过滤器 (FilterType, FilterData)。
+    支持: entity_type(0) block_name(2) dimstyle(3) linetype(6) textstyle(7) layer(8)
+    visible(60) color(62) space(67)。无有效条件返回 (None, None)。"""
     if not filter_criteria:
         return None, None
+    _FIELD_MAP = {
+        "entity_type": 0,
+        "block_name": 2,
+        "dimstyle": 3,
+        "linetype": 6,
+        "textstyle": 7,
+        "layer": 8,
+        "visible": 60,
+        "color": 62,
+        "space": 67,
+    }
     type_codes = []
     type_values = []
-    if "entity_type" in filter_criteria:
-        type_codes.append(0)
-        type_values.append(filter_criteria["entity_type"])
-    if "layer" in filter_criteria:
-        type_codes.append(8)
-        type_values.append(filter_criteria["layer"])
-    if "color" in filter_criteria:
-        type_codes.append(62)
-        type_values.append(filter_criteria["color"])
+    for field, code in _FIELD_MAP.items():
+        val = filter_criteria.get(field)
+        if val is None:
+            continue
+        if field == "entity_type":
+            val = _normalize_entity_type(val) or val
+        type_codes.append(code)
+        type_values.append(val)
     if not type_codes:
         return None, None
     return aInt(type_codes), tuple(type_values)
+
+
+def _select_by_filter(zcad_conn, filter_type, filter_data, name="_mcp_query_tmp"):
+    """用原生 DXF 过滤器选择全部匹配实体（mode=5 acSelectionSetAll）。
+    把筛选下推到 CAD C++ 引擎，避免 Python 逐个 COM 迭代。
+    返回 SelectionSet 对象（复用同名集）；filter 为空或失败返回 None。"""
+    if filter_type is None:
+        return None
+    try:
+        sel = _ensure_selection_set(zcad_conn, name)
+        sel.Select(5, None, None, filter_type, filter_data)
+        return sel
+    except Exception as e:
+        logger.warning("原生选择过滤失败，将回退迭代: %s", e)
+        return None
 
 
 def _read_pickfirst_selection(zcad_conn, max_items=500):
@@ -1854,10 +2192,12 @@ def _read_pickfirst_selection(zcad_conn, max_items=500):
 @mcp.tool
 def select_entities(action: str, params: dict = None) -> dict:
     """选择集操作。action及params:
-    select:{mode}(0=Window/1=Crossing需{x1,y1,x2,y2},2=Previous/4=Last/5=All无需坐标,[name,filter:{entity_type,layer,color},return_items])
+    select:{mode}(0=Window/1=Crossing需{x1,y1,x2,y2},2=Previous/4=Last/5=All无需坐标,[name,filter,return_items])
     by_polygon:{mode(0=Fence/1=WinPoly/2=CrossPoly),points,[name,filter,return_items]}
     get_items:{[name,max_items]} | get_picked:{[max_items]}
-    list/clear/delete:{[name]}"""
+    list/clear/delete:{[name]}
+    filter字段(原生DXF过滤,支持多条件组合): {entity_type,dimstyle,layer,color,linetype,textstyle,block_name,visible,space}
+    entity_type支持LINE/CIRCLE/TEXT等标准名或AcDb前缀(自动归一化)"""
     try:
         logger.info("tool_call select_entities action=%s", action)
         zcad_conn, _ = get_cad_connection()
@@ -2401,7 +2741,6 @@ def manage_bom(action: str, params: dict = None) -> dict:
         return _err(f"明细表操作({action})", e)
 
 
-
 @mcp.tool
 def create_partlist() -> dict:
     """创建明细表实体。通过向命令行发送 ZwmPartlist 命令实现。
@@ -2445,7 +2784,6 @@ def manage_mech_db(action: str, params: dict = None) -> dict:
         return _err("机械数据库操作", ValueError(f"不支持的操作: {action}"))
     except Exception as e:
         return _err(f"机械数据库操作({action})", e)
-
 
 
 @mcp.tool

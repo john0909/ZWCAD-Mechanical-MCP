@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 绘图 | 3 | `draw_entity`（2D）、`draw_batch`（批量）、`draw_3d_solid`（3D）|
 | 注释与标注 | 3 | `add_annotation`、`add_dimension`、`insert_block` |
 | 实体操作 | 4 | `transform_entity`、`modify_entity`、`get_entity_info`、`set_entity_properties` |
-| 对象查询 | 2 | `find_object`、`get_objects_in_model` |
+| 对象查询 | 3 | `find_object`、`get_objects_in_model`、`query_dimensions` |
 | 样式管理 | 1 | `manage_style`（图层/线型/文字/标注样式 CRUD）|
 | 视图与布局 | 2 | `manage_view`、`zoom` |
 | 文档管理 | 1 | `manage_document` |
@@ -37,7 +37,7 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 机械应用 | 4 | `mech_doc`、`cad_environment_init`、`get_balloon`、`insert_balloon` |
 | 扩展数据 | 3 | `manage_dictionary`、`manage_xdata`、`manage_utility` |
 
-**共计 36 个工具**
+**共计 37 个工具**
 
 ## 系统要求
 
@@ -156,6 +156,7 @@ start.bat
 |------|------|
 | `find_object` | 按类型/属性/句柄查找对象 |
 | `get_objects_in_model` | 获取模型空间对象列表 |
+| `query_dimensions` | 快速查询所有标注（尺寸值/公差/文字覆盖等）；原生 DXF 过滤，远快于逐个迭代；`detail=summary\|full`，可按 `layer` 过滤 |
 
 ### 样式管理
 
@@ -400,7 +401,7 @@ A ZWCAD Mechanical CAD automation MCP service that allows AI models to directly 
 | Drawing | 3 | `draw_entity` (2D), `draw_batch` (batch), `draw_3d_solid` (3D) |
 | Annotation | 3 | `add_annotation`, `add_dimension`, `insert_block` |
 | Entity Ops | 4 | `transform_entity`, `modify_entity`, `get_entity_info`, `set_entity_properties` |
-| Object Query | 2 | `find_object`, `get_objects_in_model` |
+| Object Query | 3 | `find_object`, `get_objects_in_model`, `query_dimensions` |
 | Style Mgmt | 1 | `manage_style` (layer/linetype/text/dim style CRUD) |
 | View & Layout | 2 | `manage_view`, `zoom` |
 | Document | 1 | `manage_document` |
@@ -416,7 +417,7 @@ A ZWCAD Mechanical CAD automation MCP service that allows AI models to directly 
 | Mech App | 4 | `mech_doc`, `cad_environment_init`, `get_balloon`, `insert_balloon` |
 | Extended Data | 3 | `manage_dictionary`, `manage_xdata`, `manage_utility` |
 
-**Total: 36 tools**
+**Total: 37 tools**
 
 ## System Requirements
 
@@ -533,6 +534,7 @@ add tolerance to an existing dimension -> `modify_entity(entity_type="dimension"
 |------|-------------|
 | `find_object` | Find object by type/property/handle |
 | `get_objects_in_model` | List model space objects |
+| `query_dimensions` | Fast query all dimensions (measurement/tolerance/text override); native DXF filter; `detail=summary\|full`, optional `layer` filter |
 
 ### Style Management
 
