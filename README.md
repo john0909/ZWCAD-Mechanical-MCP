@@ -375,7 +375,7 @@ AI Client (Cursor/Claude/Qoder)
 
 ## 依赖
 
-- [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD/AutoCAD Python COM 封装
+- [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD Python COM 封装
 - [pyzwcadmech](https://pypi.org/project/pyzwcadmech/) >=0.3.0 - 中望机械 Python COM 封装（含 BOM 读写修复）
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP 协议服务框架
 - [comtypes](https://github.com/enthought/comtypes) - COM 类型库加载与接口调用
@@ -748,7 +748,7 @@ AI Client (Cursor/Claude/Qoder)
 
 ## Dependencies
 
-- [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD/AutoCAD Python COM wrapper
+- [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD Python COM wrapper
 - [pyzwcadmech](https://pypi.org/project/pyzwcadmech/) >=0.3.0 - ZWCAD MFG Python COM wrapper (includes BOM read/write fixes)
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP protocol server framework
 - [comtypes](https://github.com/enthought/comtypes) - COM type library loading and interface invocation
