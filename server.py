@@ -705,6 +705,86 @@ _DIM_REQUIRED = {
     "ordinate": ["def_x", "def_y", "leader_x", "leader_y", "use_x_axis"],
 }
 
+# 公差显示方式(ToleranceDisplay): 0=无 1=对称 2=偏差 3=极限 4=基本
+_TOL_DISPLAY = {
+    "none": 0, "symmetrical": 1, "deviation": 2, "limits": 3, "basic": 4,
+}
+_TOL_DISPLAY_NAMES = ", ".join(_TOL_DISPLAY)
+
+
+def _apply_dim_extras(obj, p):
+    """为标注对象应用公差/配合等附加属性，返回已应用项描述列表。
+    支持的 params(均可选):
+    - tolerance_display: none|symmetrical|deviation|limits|basic 或 0-4
+    - upper_deviation/lower_deviation: 上/下偏差(带符号, 如 0.021 / -0.05)
+    - tolerance_precision: 公差小数位数 0-8
+    - tolerance_height_scale: 公差字高系数(相对标注字高, GB常用0.7)
+    - fit_symbol: 配合代号, 如 "H7"、"H7/g6"; 含"/"或"^"时默认堆叠为分数显示
+    - fit_stacked: 配合代号是否堆叠显示(默认True)
+    - fit_height_scale: 配合代号字高系数(默认0.7)
+    - text_prefix/text_suffix/text_override: 标注文字前缀/后缀/替代("<>"表示测量值)
+    """
+    updated = []
+    tol_keys = ("tolerance_display", "upper_deviation", "lower_deviation",
+                "tolerance_precision", "tolerance_height_scale")
+    fit_keys = ("fit_symbol", "text_prefix", "text_suffix", "text_override")
+    if not any(k in p for k in tol_keys + fit_keys):
+        return updated
+
+    if "tolerance_display" in p:
+        disp = p["tolerance_display"]
+        if isinstance(disp, str):
+            key = disp.strip().lower()
+            if key not in _TOL_DISPLAY:
+                raise ValueError(
+                    "不支持的公差显示方式: %s，支持: %s 或 0-4" % (disp, _TOL_DISPLAY_NAMES)
+                )
+            disp = _TOL_DISPLAY[key]
+        obj.ToleranceDisplay = int(disp)
+        updated.append(f"ToleranceDisplay={int(disp)}")
+
+    if "upper_deviation" in p:
+        obj.ToleranceUpperLimit = float(p["upper_deviation"])
+        updated.append(f"上偏差={float(p['upper_deviation'])}")
+    if "lower_deviation" in p:
+        # COM 的 ToleranceLowerLimit 为正值时表示下偏差为负，故取相反数
+        obj.ToleranceLowerLimit = -float(p["lower_deviation"])
+        updated.append(f"下偏差={float(p['lower_deviation'])}")
+
+    if "tolerance_precision" in p:
+        obj.TolerancePrecision = int(p["tolerance_precision"])
+        updated.append(f"公差精度={p['tolerance_precision']}")
+    if "tolerance_height_scale" in p:
+        obj.ToleranceHeightScale = float(p["tolerance_height_scale"])
+        updated.append(f"公差字高系数={p['tolerance_height_scale']}")
+
+    if "text_override" in p:
+        obj.TextOverride = str(p["text_override"])
+        updated.append(f"TextOverride='{p['text_override']}'")
+    if "text_prefix" in p:
+        obj.TextPrefix = str(p["text_prefix"])
+        updated.append(f"前缀='{p['text_prefix']}'")
+    if "text_suffix" in p:
+        obj.TextSuffix = str(p["text_suffix"])
+        updated.append(f"后缀='{p['text_suffix']}'")
+
+    if "fit_symbol" in p:
+        fit = str(p["fit_symbol"]).strip()
+        stacked = p.get("fit_stacked", True) and ("/" in fit or "^" in fit)
+        if stacked:
+            hs = float(p.get("fit_height_scale", 0.7))
+            # 用 MText 堆叠代码将配合代号以分数形式附加在测量值之后
+            obj.TextOverride = f"<>\\H{hs}x;\\S{fit};"
+            updated.append(f"配合代号(堆叠)='{fit}'")
+        else:
+            obj.TextSuffix = fit
+            updated.append(f"配合代号='{fit}'")
+
+    if updated and hasattr(obj, "Update"):
+        obj.Update()
+    return updated
+
+
 
 # ============================================================
 # 注释内部实现
@@ -951,6 +1031,14 @@ def _modify_spline_impl(zcad, obj, p):
     return updated
 
 
+def _modify_dimension_impl(zcad, obj, p):
+    """给已有标注添加/修改公差、配合代号、文字前后缀等。参数同 _apply_dim_extras。"""
+    name = getattr(obj, "ObjectName", "")
+    if "Dimension" not in name:
+        raise ValueError(f"对象不是标注: {name}")
+    return _apply_dim_extras(obj, p)
+
+
 _MODIFY_DISPATCH = {
     "circle": ("Circle", _modify_circle_impl),
     "arc": ("Arc", _modify_arc_impl),
@@ -959,6 +1047,7 @@ _MODIFY_DISPATCH = {
     "mtext": ("MText", _modify_mtext_impl),
     "polyline": (None, _modify_polyline_impl),
     "spline": ("Spline", _modify_spline_impl),
+    "dimension": (None, _modify_dimension_impl),
 }
 
 
@@ -1080,7 +1169,16 @@ def add_dimension(dim_type: str, params: dict, layer: str = "0") -> dict:
     diametric:{chord_x,chord_y,far_chord_x,far_chord_y,leader_length}
     radial:{center_x,center_y,chord_x,chord_y,leader_length}
     angular:{vertex_x,vertex_y,first_x,first_y,second_x,second_y,text_x,text_y}
-    ordinate:{def_x,def_y,leader_x,leader_y,use_x_axis}"""
+    ordinate:{def_x,def_y,leader_x,leader_y,use_x_axis}
+
+    所有类型均可附加公差/配合参数(可选):
+    tolerance_display: none|symmetrical(对称)|deviation(偏差)|limits(极限)|basic(基本) 或 0-4
+    upper_deviation/lower_deviation: 上/下偏差(带符号, 如 0.021 / -0.05)
+    tolerance_precision: 公差小数位数0-8 | tolerance_height_scale: 公差字高系数(GB常用0.7)
+    fit_symbol: 配合代号如 "H7"、"H7/g6"(含"/"或"^"时默认堆叠为分数, fit_stacked=False则平排)
+    fit_height_scale: 配合代号字高系数(默认0.7)
+    text_prefix/text_suffix/text_override: 标注文字前缀/后缀/替代("<>"表示测量值)
+    示例: 直径50H7孔 -> dim_type=diametric, fit_symbol="H7"; 50(+0.021/0) -> tolerance_display="deviation", upper_deviation=0.021, lower_deviation=0"""
     try:
         zcad_conn, _ = get_cad_connection()
         fn = _DIM_DISPATCH.get(dim_type)
@@ -1090,7 +1188,11 @@ def add_dimension(dim_type: str, params: dict, layer: str = "0") -> dict:
         if err:
             return err
         obj, desc = fn(zcad_conn.model, params, layer)
-        return _ok(msg=desc, handle=obj.Handle, layer=layer)
+        extras = _apply_dim_extras(obj, params)
+        result = _ok(msg=desc, handle=obj.Handle, layer=layer)
+        if extras:
+            result["extras"] = extras
+        return result
     except Exception as e:
         return _err(f"添加{dim_type}标注", e)
 
@@ -1151,6 +1253,8 @@ def modify_entity(entity_type: str, params: dict,
     line:{x1,y1,z1,x2,y2,z2} | text:{text,height,rotation,stylename,x,y}
     mtext:{text,height,width,rotation,attachment_point}
     polyline:{closed,constant_width,elevation} | spline:{closed,fit_tolerance,start_tangent_x/y,end_tangent_x/y}
+    dimension:{tolerance_display,upper_deviation,lower_deviation,tolerance_precision,
+    tolerance_height_scale,fit_symbol,fit_stacked,fit_height_scale,text_prefix/suffix/override}(均同add_dimension的公差/配合参数)
     offset:{distance}(必需) | explode:{}"""
     try:
         logger.info("tool_call modify_entity type=%s handle=%s", entity_type, handle)

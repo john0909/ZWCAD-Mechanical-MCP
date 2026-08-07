@@ -122,15 +122,31 @@ start.bat
 | 工具 | 说明 | annotation_type / dim_type |
 |------|------|---------------------------|
 | `add_annotation` | 添加注释对象 | `text`, `mtext`, `leader`, `tolerance`, `mleader`, `hatch`, `table` |
-| `add_dimension` | 添加标注 | `aligned`, `rotated`, `diametric`, `radial`, `angular`, `ordinate` |
+| `add_dimension` | 添加标注（支持公差/配合代号） | `aligned`, `rotated`, `diametric`, `radial`, `angular`, `ordinate` |
 | `insert_block` | 在指定位置插入图块 | - |
+
+**标注公差与配合**（`add_dimension` 与 `modify_entity(entity_type="dimension")` 通用，均放在 `params` 中，可选）：
+
+| 参数 | 说明 |
+|------|------|
+| `tolerance_display` | 公差显示方式：`none`\|`symmetrical`(对称)\|`deviation`(偏差)\|`limits`(极限)\|`basic`(基本)，或 0-4 |
+| `upper_deviation` / `lower_deviation` | 上/下偏差（带符号，如 `0.021` / `-0.05`） |
+| `tolerance_precision` | 公差小数位数 0-8 |
+| `tolerance_height_scale` | 公差字高系数（GB 常用 0.7） |
+| `fit_symbol` | 配合代号，如 `"H7"`、`"H7/g6"`（含 `/` 或 `^` 时默认堆叠为分数显示） |
+| `fit_stacked` / `fit_height_scale` | 配合代号是否堆叠（默认 `True`）/ 字高系数（默认 0.7） |
+| `text_prefix` / `text_suffix` / `text_override` | 标注文字前缀/后缀/替代（`<>` 表示测量值） |
+
+示例：直径50H7孔 → `add_dimension(dim_type="diametric", params={..., "fit_symbol": "H7"})`；
+50(+0.021/0)偏差 → `params={..., "tolerance_display": "deviation", "upper_deviation": 0.021, "lower_deviation": 0}`；
+已有标注补公差 → `modify_entity(entity_type="dimension", handle="A3F", params={"tolerance_display": "limits", ...})`。
 
 ### 实体操作
 
 | 工具 | 说明 | action / entity_type |
 |------|------|----------------------|
 | `transform_entity` | 实体变换 | `copy`, `move`, `rotate`, `mirror`, `scale`, `delete`, `array_polar`, `array_rectangular` |
-| `modify_entity` | 修改实体几何属性 | `circle`, `arc`, `line`, `text`, `mtext`, `polyline`, `spline`, `offset`, `explode` |
+| `modify_entity` | 修改实体几何属性（含标注公差/配合） | `circle`, `arc`, `line`, `text`, `mtext`, `polyline`, `spline`, `dimension`, `offset`, `explode` |
 | `get_entity_info` | 获取实体详细信息 | - |
 | `set_entity_properties` | 设置实体通用属性（图层/颜色/线型等） | - |
 
@@ -483,15 +499,31 @@ Refer to `mcp-config.json` for configuration.
 | Tool | Description | type |
 |------|-------------|------|
 | `add_annotation` | Add annotation objects | `text`, `mtext`, `leader`, `tolerance`, `mleader`, `hatch`, `table` |
-| `add_dimension` | Add dimensions | `aligned`, `rotated`, `diametric`, `radial`, `angular`, `ordinate` |
+| `add_dimension` | Add dimensions (with tolerance/fit support) | `aligned`, `rotated`, `diametric`, `radial`, `angular`, `ordinate` |
 | `insert_block` | Insert block at specified position | - |
+
+**Dimension tolerance & fit** (optional keys in `params` of `add_dimension`, or `modify_entity` with `entity_type="dimension"`):
+
+| Parameter | Description |
+|-----------|-------------|
+| `tolerance_display` | Tolerance style: `none`\|`symmetrical`\|`deviation`\|`limits`\|`basic`, or 0-4 |
+| `upper_deviation` / `lower_deviation` | Upper/lower deviation (signed, e.g. `0.021` / `-0.05`) |
+| `tolerance_precision` | Tolerance decimal places 0-8 |
+| `tolerance_height_scale` | Tolerance text height factor (GB commonly 0.7) |
+| `fit_symbol` | Fit designation, e.g. `"H7"`, `"H7/g6"` (stacked as fraction by default when containing `/` or `^`) |
+| `fit_stacked` / `fit_height_scale` | Stack fit designation (default `True`) / height factor (default 0.7) |
+| `text_prefix` / `text_suffix` / `text_override` | Dimension text prefix/suffix/override (`<>` keeps measured value) |
+
+Examples: a ø50H7 hole (diametric) -> `add_dimension(dim_type="diametric", params={..., "fit_symbol": "H7"})`;
+50(+0.021/0) deviation -> `params={..., "tolerance_display": "deviation", "upper_deviation": 0.021, "lower_deviation": 0}`;
+add tolerance to an existing dimension -> `modify_entity(entity_type="dimension", handle="A3F", params={"tolerance_display": "limits", ...})`.
 
 ### Entity Operations
 
 | Tool | Description | action / entity_type |
 |------|-------------|----------------------|
 | `transform_entity` | Entity transform | `copy`, `move`, `rotate`, `mirror`, `scale`, `delete`, `array_polar`, `array_rectangular` |
-| `modify_entity` | Modify entity geometry | `circle`, `arc`, `line`, `text`, `mtext`, `polyline`, `spline`, `offset`, `explode` |
+| `modify_entity` | Modify entity geometry (incl. dimension tolerance/fit) | `circle`, `arc`, `line`, `text`, `mtext`, `polyline`, `spline`, `dimension`, `offset`, `explode` |
 | `get_entity_info` | Get entity details (properties, geometry, bounding box) | - |
 | `set_entity_properties` | Set entity properties (layer/color/linetype etc.) | - |
 
