@@ -42,6 +42,7 @@ except Exception as _tlb_err:
     )
 
 from pyzwcadmech import ZwCADMech
+from hatch_info import extract_hatch_loops
 
 mcp = FastMCP(name="ZWCAD Mechanical Drawing Server")
 
@@ -1437,116 +1438,6 @@ def modify_entity(entity_type: str, params: dict,
 
 
 
-def _extract_hatch_info(obj):
-    """Extract Hatch boundary loop data.
-
-    GetLoopAt has [out] parameters that dynamic dispatch cannot handle.
-    comtypes.client.GetBestInterface promotes the dynamic dispatch object
-    to a typed IZcadHatch interface, enabling GetLoopAt to return correctly.
-    """
-    try:
-        import comtypes.client
-    except Exception:
-        return None
-    try:
-        typed = comtypes.client.GetBestInterface(obj)
-    except Exception:
-        return None
-
-    loops = []
-    try:
-        num_loops = typed.NumberOfLoops
-    except Exception:
-        num_loops = 0
-
-    for i in range(num_loops):
-        loop_data = {"loop_index": i}
-        try:
-            result = typed.GetLoopAt(i)
-            if not isinstance(result, tuple):
-                continue
-            entities = []
-            for item in result:
-                if item is None:
-                    continue
-                try:
-                    ent = comtypes.client.GetBestInterface(item)
-                except Exception:
-                    continue
-                oname = ent.ObjectName
-                be = {"type": oname}
-                try:
-                    be["handle"] = ent.Handle
-                except Exception:
-                    pass
-                try:
-                    be["layer"] = ent.Layer
-                except Exception:
-                    pass
-                try:
-                    be["closed"] = bool(ent.Closed)
-                except Exception:
-                    pass
-                try:
-                    coords = list(ent.Coordinates)
-                    if oname == "AcDbPolyline" or "LWPolyline" in oname:
-                        step = 2
-                    elif "Polyline" in oname:
-                        step = 3
-                    else:
-                        step = 2 if len(coords) % 2 == 0 else 3
-                    if step == 2:
-                        pts = [[round(coords[k], 6), round(coords[k + 1], 6)]
-                               for k in range(0, len(coords) - 1, step)]
-                    else:
-                        pts = [[round(coords[k], 6), round(coords[k + 1], 6), round(coords[k + 2], 6)]
-                               for k in range(0, len(coords) - 2, step)]
-                    be["vertices"] = pts
-                    be["vertex_count"] = len(pts)
-                except Exception:
-                    pass
-                try:
-                    bulges = []
-                    for k in range(be.get("vertex_count", 0)):
-                        bulges.append(round(ent.GetBulge(k), 6))
-                    if any(b != 0 for b in bulges):
-                        be["bulges"] = bulges
-                except Exception:
-                    pass
-                if oname == "AcDbLine":
-                    try:
-                        be["start"] = [round(x, 6) for x in ent.StartPoint]
-                        be["end"] = [round(x, 6) for x in ent.EndPoint]
-                    except Exception:
-                        pass
-                elif oname == "AcDbArc":
-                    try:
-                        be["center"] = [round(x, 6) for x in ent.Center]
-                        be["radius"] = round(ent.Radius, 6)
-                        be["start_angle"] = round(ent.StartAngle, 6)
-                        be["end_angle"] = round(ent.EndAngle, 6)
-                    except Exception:
-                        pass
-                elif oname == "AcDbCircle":
-                    try:
-                        be["center"] = [round(x, 6) for x in ent.Center]
-                        be["radius"] = round(ent.Radius, 6)
-                    except Exception:
-                        pass
-                elif oname == "AcDbEllipse":
-                    try:
-                        be["center"] = [round(x, 6) for x in ent.Center]
-                        be["major_axis"] = [round(x, 6) for x in ent.MajorAxis]
-                        be["radius_ratio"] = round(ent.RadiusRatio, 6)
-                    except Exception:
-                        pass
-                entities.append(be)
-            if entities:
-                loop_data["boundary_entities"] = entities
-        except Exception as e:
-            loop_data["error"] = str(e)
-        loops.append(loop_data)
-    return loops
 
 @mcp.tool
 def get_entity_info(handle: str = None, object_type: str = None,
@@ -1608,7 +1499,7 @@ def get_entity_info(handle: str = None, object_type: str = None,
                     info[prop] = list(val) if hasattr(val, '__iter__') and not isinstance(val, str) else val
                 except Exception:
                     pass
-            hatch_loops = _extract_hatch_info(obj)
+            hatch_loops = extract_hatch_loops(obj, zcad_conn=zcad_conn, handle=info.get('handle'))
             if hatch_loops is not None:
                 info['loops'] = hatch_loops
 
