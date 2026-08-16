@@ -2,18 +2,18 @@
 
 COM GetLoopAt 的 [out] 参数在部分 ZWCAD 版本的类型库中声明缺失，
 comtypes 无法封送，调用返回 None。回退方案: 通过 SendCommand 执行 LISP，
-将 (entget) 数据分块写入 USERS1-5 系统变量回传 Python 解析，
-完成后恢复变量原值。全程不读写任何文件。
+将 (entget) 数据整体写入临时文件回传 Python 解析，读后即删，
+无长度上限，不占用系统变量等用户可见状态。
 """
 
 import logging
+import os
 import re
+import tempfile
 import time
 
 logger = logging.getLogger(__name__)
 
-_USER_VARS = ("USERS1", "USERS2", "USERS3", "USERS4", "USERS5")
-_CHUNK_SIZE = 1000
 _END_MARK = "|END"
 _POLL_TIMEOUT = 5.0
 
@@ -136,53 +136,53 @@ def _extract_via_com(obj):
 
 
 def _extract_via_lisp(zcad_conn, handle):
-    """LISP 回退: (entget (handent ...)) 数据经 USERS1-5 系统变量回传。
+    """LISP 回退: (entget (handent ...)) 转储串写入临时文件回传。
 
     返回与 _extract_via_com 一致的 loops 结构，失败返回 None。
     """
     doc = zcad_conn.doc
-    originals = {}
-    for name in _USER_VARS:
+    safe = re.sub(r"[^0-9A-Za-z]", "", handle or "") or "unknown"
+    path = os.path.join(
+        tempfile.gettempdir(),
+        "zwm_hatch_%d_%s_%d.tmp" % (os.getpid(), safe, time.time_ns()),
+    )
+    if os.path.exists(path):
         try:
-            originals[name] = doc.GetVariable(name)
-        except Exception:
-            originals[name] = ""
+            os.remove(path)
+        except OSError:
+            pass
+    lisp_path = path.replace("\\", "/")
+    lisp = (
+        '(progn (setq al (entget (handent "%s")))'
+        ' (setq s (apply (function strcat)'
+        '   (mapcar (function (lambda (x) (strcat (vl-prin1-to-string x) "|"))) al)))'
+        ' (setq s (strcat s "%s"))'
+        ' (setq f (open "%s" "w"))'
+        ' (write-line s f) (close f))'
+    ) % (handle, _END_MARK, lisp_path)
+
     try:
-        for name in _USER_VARS:
-            try:
-                doc.SetVariable(name, "")
-            except Exception:
-                pass
-
-        lisp = (
-            '(progn (setq al (entget (handent "%s")))'
-            ' (setq s (apply (function strcat)'
-            '   (mapcar (function (lambda (x) (strcat (vl-prin1-to-string x) "|"))) al)))'
-        ) % handle
-        for idx, name in enumerate(_USER_VARS):
-            lisp += ' (setvar "%s" (substr s %d %d))' % (name, idx * _CHUNK_SIZE + 1, _CHUNK_SIZE)
-        lisp += ' (setvar "%s" (strcat (getvar "%s") "%s")))' % (_USER_VARS[-1], _USER_VARS[-1], _END_MARK)
-
         doc.SendCommand("\x03\x03" + lisp + "\r")
 
+        content = ""
         deadline = time.time() + _POLL_TIMEOUT
         while time.time() < deadline:
-            try:
-                if (doc.GetVariable(_USER_VARS[-1]) or "").endswith(_END_MARK):
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding="mbcs", errors="replace") as fh:
+                        content = fh.read()
+                except (OSError, ValueError):
+                    content = ""
+                if content.rstrip().endswith(_END_MARK):
                     break
-            except Exception:
-                pass
             time.sleep(0.1)
         else:
             logger.warning("LISP 提取剖面线边界环超时(handle=%s)", handle)
             return None
 
-        parts = []
-        for name in _USER_VARS:
-            v = doc.GetVariable(name) or ""
-            parts.append(v)
-        parts[-1] = parts[-1][: -len(_END_MARK)] if parts[-1].endswith(_END_MARK) else parts[-1]
-        content = "".join(parts)
+        content = content.rstrip()
+        if content.endswith(_END_MARK):
+            content = content[: -len(_END_MARK)]
         if not content.strip():
             return None
 
@@ -192,11 +192,11 @@ def _extract_via_lisp(zcad_conn, handle):
         logger.warning("LISP 提取剖面线边界环失败(handle=%s): %s", handle, e)
         return None
     finally:
-        for name, val in originals.items():
-            try:
-                doc.SetVariable(name, val)
-            except Exception:
-                pass
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def _parse_dump_groups(content):
@@ -323,7 +323,7 @@ def _parse_loop_groups(groups):
 def extract_hatch_loops(obj, zcad_conn=None, handle=None):
     """提取剖面线边界环数据。
 
-    COM GetLoopAt 失败时回退 LISP(USERS1-5 系统变量通道)。
+    COM GetLoopAt 失败时回退 LISP(临时文件通道)。
     返回 [{"loop_index", "boundary_entities": [...]}]。
     """
     loops, com_ok = _extract_via_com(obj)
