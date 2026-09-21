@@ -61,5 +61,38 @@ class MechanicalRunnerTests(unittest.TestCase):
         self.assertEqual(1, backend.failover_calls)
 
 
+class MechSymbolToolTests(unittest.TestCase):
+    def test_six_symbol_tools_are_registered(self):
+        names = (
+            "manage_surf_sym",
+            "manage_fc_frame",
+            "manage_datum_id",
+            "manage_note",
+            "manage_welding",
+            "manage_bubble",
+        )
+        for name in names:
+            self.assertTrue(callable(getattr(server, name)), name)
+
+    def test_surf_sym_get_dispatches_without_cad_eval(self):
+        class Doc:
+            pass
+
+        captured = {}
+
+        def fake_dispatch(kind, action, params, doc):
+            captured["args"] = (kind, action, params, doc)
+            return {"msg": "ok", "handle": "AB", "a1": "3.2"}
+
+        with patch.object(server, "get_cad_connection", return_value=(type("C", (), {"doc": Doc()})(), object())), patch.object(
+            server, "dispatch_mech_symbol", fake_dispatch
+        ):
+            result = server.manage_surf_sym("get", {"handle": "AB"})
+
+        self.assertEqual("ok", result["msg"])
+        self.assertEqual("AB", result["handle"])
+        self.assertEqual(("surf_sym", "get", {"handle": "AB"}, captured["args"][3]), captured["args"])
+
+
 if __name__ == "__main__":
     unittest.main()

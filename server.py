@@ -29,6 +29,7 @@ from fastmcp import FastMCP
 from pyzwcad import ZwCAD, APoint
 from pyzwcad.types import aDouble, aInt
 from hatch_info import extract_hatch_loops
+from mech_symbols import dispatch as dispatch_mech_symbol
 from mechanical_backend import (
     MechanicalBackendError,
     MechanicalBackendManager,
@@ -2758,6 +2759,153 @@ def insert_balloon(
         )
 
     return _run_mechanical("插入球标", operation)
+
+
+def _run_mech_symbol(label: str, kind: str, action: str, params: dict) -> dict:
+    action = (action or "").strip().lower()
+    read_only = action in ("get", "get_substd")
+
+    def operation():
+        zcad_conn, _ = get_cad_connection()
+        logger.info("tool_call %s action=%s", label, action)
+        data = dict(dispatch_mech_symbol(kind, action, params or {}, zcad_conn.doc))
+        msg = data.pop("msg", None)
+        return _ok(msg, **data)
+
+    return _run_mechanical(f"{label}({action})", operation, read_only=read_only)
+
+
+@mcp.tool
+def manage_surf_sym(action: str, params: dict = None) -> dict:
+    """表面粗糙度符号 ZwmSurfSym（机械符号，不是普通 CAD 标注）。
+
+    action: insert|get|set。插入前建议先 cad_environment_init("GB")。
+    get/set 需要 params.handle。set 只传要改的字段（内部 Get 合并后写回）。
+
+    insert/get 主要字段:
+    - arrow_x/y/z 或 arrow:[x,y,z]: 箭头位置（无引线时仍需占位）
+    - symbol_x/y/z 或 symbol:[x,y,z]: 符号基点
+    - a1: 粗糙度主值，如 "3.2" / "Ra 3.2"；"" 则不画上部文字
+    - symbol_type: 0=基本 1=不去除材料 2=去除材料
+    - has_leader: 是否带引线
+    - direction: 0=自动 1=朝左 2=朝右
+    - pattern: 加工纹理 0-7（0无 1辐射 2垂直 3交叉 4多向 5圆 6平行 7颗粒）
+    - b/c/c1/e1/f/g: 加工方法/左部/取样长度/加工余量/右部/其它
+    - sub_std: 子标准如 "GB06"；""=默认
+    - rotation: 旋转角(弧度)，仅无引线时生效
+    """
+    return _run_mech_symbol("表面粗糙度符号", "surf_sym", action, params)
+
+
+@mcp.tool
+def manage_fc_frame(action: str, params: dict = None) -> dict:
+    """形位公差框 ZwmFCFrame（机械符号；不同于 add_annotation 的 CAD tolerance）。
+
+    action: insert|get|set。插入前建议先 cad_environment_init("GB")。
+    get/set 需要 params.handle。set 只传要改的字段。
+
+    insert 主要字段:
+    - arrow / symbol: 箭头点、框基点
+    - sub_std: "GB" / "用户自定义" / ""
+    - layer_count: 1-3
+    - has_leader, direction(0自动/1左/2右)
+    - layers: [{characteristic, tol1, tol2, datums:[d1,d2,d3]}, ...]
+      characteristic 0-15: 0无 1直线度 2平面度 3圆度 4圆柱度 5线轮廓度 6面轮廓度
+      7倾斜度 8垂直度 9平行度 10位置度 11同轴度 12同心度 13圆跳动 14对称度 15全跳动
+    - top_note / bottom_note / all_around / material_modifier(0-11)
+    """
+    return _run_mech_symbol("形位公差框", "fc_frame", action, params)
+
+
+@mcp.tool
+def manage_datum_id(action: str, params: dict = None) -> dict:
+    """基准代号 ZwmDatumId（机械基准符号）。
+
+    action: insert|get|set。插入前建议先 cad_environment_init("GB")。
+    get/set 需要 params.handle。set 只传要改的字段。
+
+    insert 主要字段:
+    - end_x/y/z 或 end: 基准线端点（三角箭头）
+    - jog_x/y/z 或 jog: 引线转折点（可等于端点）
+    - box_x/y/z 或 box: 基准方框位置
+    - sub_std: "GB08"(默认) / "GB96" / ""
+    - letter: 基准字母，如 "A"
+    - note / thread_note: 基准注释、螺纹注释
+    - arrow_type: 0无 1按标准(默认) 2粗线 3-6开放箭头
+    - direction: 0自动 1强制左 2强制右
+    """
+    return _run_mech_symbol("基准代号", "datum_id", action, params)
+
+
+@mcp.tool
+def manage_note(action: str, params: dict = None) -> dict:
+    """机械引线注释 ZwmNote（不是 add_annotation 的 CAD leader/mleader）。
+
+    action: insert|get|set。插入前建议先 cad_environment_init("GB")。
+    不封装交互式 ZwmNote 命令。get/set 需要 params.handle。
+
+    insert 主要字段:
+    - arrow_x/y/z 或 arrow: 箭头位置
+    - text_x/y/z 或 text_point: 文字位置
+    - text: 注释文字（MTEXT，可用 \\P 换行、%%C 直径）
+    - has_leader: 是否带引线
+    - leader_justification: 0-7（0顶部线中点 … 7双行文字）
+    - text_height: 字高，<=0 用标准默认（GB 3.5）
+    - text_h_align: 0左 1中 2右
+    - direction: 0自动 1左 2右
+    - arrow_type: 0无 1按标准 2粗线 3-6开放箭头
+    """
+    return _run_mech_symbol("引线注释", "note", action, params)
+
+
+@mcp.tool
+def manage_welding(action: str, params: dict = None) -> dict:
+    """焊接符号 ZwmWelding。
+
+    action: insert|get|set。插入前建议先 cad_environment_init("GB")。
+    get/set 需要 params.handle。set 只传要改的字段；extra 按键合并。
+
+    insert 主要字段:
+    - arrow / symbol: 箭头点、符号基点
+    - sub_std: "GB_2008"(默认) / "GB" / "用户自定义"
+    - symbol_type: WeldSymbol，GB 段如 48=角焊缝 54=V形 49=I形对接；0=默认
+    - has_leader, direction(0/1/2), angle(弧度), text_align(0左/1中/2右)
+    - extra: 键值对，原样传给 LISP。常用键 Size/Depth/Length/Pitch/Number/Method/Angle/Gap；
+      特殊键 OtherSideType、Other:Size、Contour、Brazing、AreaWeld、FieldWeld、
+      TailNote、ClosedTail、Stagger、DistancePara、IdentificationLine、SwapSide、Layer
+    """
+    return _run_mech_symbol("焊接符号", "welding", action, params)
+
+
+@mcp.tool
+def manage_bubble(action: str, params: dict = None) -> dict:
+    """检验气泡图（吸附尺寸/符号；不是零件序号球标 insert_balloon）。
+
+    action: auto|fill_all|fill_picked|manu|manu_list|get_substd。插入前建议先 cad_environment_init("GB")。
+    窗口点选请先用 select_entities，再把 handle 列表传给 auto。
+
+    fill_picked（当前 CAD 选择集）:
+    - 从 Pickfirst 选择中筛选可标注 DXF 类型后，逐个 auto(scope=1)；参数同 fill_all。
+
+    fill_all（推荐全图建满）:
+    - 枚举当前空间可标注对象（与 Zwm_BubbleAuto 支持类型一致），对每个 handle 单独调用 auto(scope=1)。
+    - 未传 handles 时用 ssget 扫描；可传 handles 限定子集。
+    - layer / entity_types / limit / exclude_handles / stop_on_error
+    - 其余字段同 auto（sub_std、location_method、has_leader、filter_duplicate 等；默认 filter_duplicate=false）
+
+    auto:
+    - scope: 0=全图扫描（handles 传空；部分图纸可能建 0 个，请用 fill_all） 1=按 handles 列表
+    - handles: 被标注对象 handle 列表
+    - sub_std / process_name / bubble_text / prefix / suffix
+    - bubble_type: 0-8；is_insert: 插号；bubble_order: 0选择顺序 1左到右 2上到下
+    - location_method: -1自动避让，或 0/45/90/135/180/225/270/315
+    - has_leader / filter_duplicate
+
+    manu: handle(可空=自由放置), points:[[x,y,z],...]（无引线>=1，有引线>=2），以及 auto 中的文字/类型字段。
+    manu_list: items 为多个 manu 对象。
+    get_substd: 查询当前气泡子标准名，无需 params。
+    """
+    return _run_mech_symbol("气泡图", "bubble", action, params)
 
 
 @mcp.tool

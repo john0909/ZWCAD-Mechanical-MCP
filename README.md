@@ -35,9 +35,10 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 | 明细表 | 2 | `manage_bom`、`create_partlist` |
 | 机械数据库 | 1 | `manage_mech_db` |
 | 机械应用 | 4 | `mech_doc`、`cad_environment_init`、`get_balloon`、`insert_balloon` |
+| 机械符号标注 | 6 | `manage_surf_sym`、`manage_fc_frame`、`manage_datum_id`、`manage_note`、`manage_welding`、`manage_bubble` |
 | 扩展数据 | 3 | `manage_dictionary`、`manage_xdata`、`manage_utility` |
 
-**共计 37 个工具**
+**共计 43 个工具**
 
 ## 系统要求
 
@@ -238,7 +239,20 @@ start.bat
 | `get_balloon` | 获取球标对象用于零件编号标注 |
 | `insert_balloon` | 插入球标（零件序号标注），通过 LISP 命令 Zwm_BalloonInsert 实现。参数: 箭头位置/符号位置/文字/序号类型(0-6)/是否带引线 |
 
-> 以上工具使用当前选定的机械后端。ZRX 回退覆盖当前 MCP 暴露的调用面，不承诺覆盖 `pyzwcadmech` 未被 MCP 使用的全部公开 API。
+### 机械符号标注（ZwmToolKit LISP）
+
+以下工具通过 `lisp_bridge.py` 向 ZWCAD 发送 `Zwm_*` AutoLISP（Get/Set 经命名字典 `ZWM_MCP` 临时 XRECORD 回传；Insert 以 ModelSpace 新增实体句柄为准）。插入前建议先 `cad_environment_init("GB")`。详细 LISP 槽位见 [ZwmToolKit符号标注LISP接口说明.md](ZwmToolKit符号标注LISP接口说明.md)。
+
+| 工具 | 说明 | action |
+|------|------|--------|
+| `manage_surf_sym` | 表面粗糙度 `ZwmSurfSym` | `insert` / `get` / `set` |
+| `manage_fc_frame` | 形位公差框 `ZwmFCFrame` | `insert` / `get` / `set` |
+| `manage_datum_id` | 基准代号 `ZwmDatumId` | `insert` / `get` / `set` |
+| `manage_note` | 机械引线注释 `ZwmNote` | `insert` / `get` / `set` |
+| `manage_welding` | 焊接符号 `ZwmWelding` | `insert` / `get` / `set` |
+| `manage_bubble` | 检验气泡图（非零件序号球标） | `auto` / `fill_all` / `fill_picked` / `manu` / `manu_list` / `get_substd` |
+
+> 以上机械模块与符号工具使用当前选定的机械后端。ZRX 回退覆盖当前 MCP 暴露的调用面，不承诺覆盖 `pyzwcadmech` 未被 MCP 使用的全部公开 API。
 
 ### 扩展数据
 
@@ -312,7 +326,9 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server 主程序（37个工具）
+├── server.py                 # MCP Server 主程序（43个工具）
+├── lisp_bridge.py            # AutoLISP SendCommand 与 XRECORD 回传
+├── mech_symbols.py           # 机械符号 LISP 编排（manage_* 符号工具）
 ├── mechanical_backend.py     # 机械探测、选路与运行期回退
 ├── mech_bridge.py            # ZRX HTTP/JSON 兼容层
 ├── requirements.txt          # Python 依赖
@@ -331,10 +347,12 @@ AI Client (Cursor/Claude/Qoder)
         │
         │ MCP Protocol (STDIO)
         ▼
-   FastMCP Server (server.py, 37 tools)
+   FastMCP Server (server.py, 43 tools)
         │
         ├── pyzwcad ──────► ZWCAD.Application COM API (基础绘图/标注/变换/查询)
         │                   └── 不依赖类型库，始终可用
+        │
+        ├── lisp_bridge.py ─► Zwm_* LISP（符号 Get/Set 经 ZWM_MCP XRECORD）
         │
         └── mechanical_backend.py ──► 机械后端自动选路
                 ├── pyzwcadmech ──► ZwmToolKit COM（默认主路径）
@@ -397,9 +415,10 @@ A ZWCAD Mechanical CAD automation MCP service that allows AI models to directly 
 | BOM | 2 | `manage_bom`, `create_partlist` |
 | Mech Database | 1 | `manage_mech_db` |
 | Mech App | 4 | `mech_doc`, `cad_environment_init`, `get_balloon`, `insert_balloon` |
+| Mech Symbols | 6 | `manage_surf_sym`, `manage_fc_frame`, `manage_datum_id`, `manage_note`, `manage_welding`, `manage_bubble` |
 | Extended Data | 3 | `manage_dictionary`, `manage_xdata`, `manage_utility` |
 
-**Total: 37 tools**
+**Total: 43 tools**
 
 ## System Requirements
 
@@ -598,7 +617,20 @@ add tolerance to an existing dimension -> `modify_entity(entity_type="dimension"
 | `get_balloon` | Get balloon object for part numbering |
 | `insert_balloon` | Insert balloon (part number annotation) via LISP command Zwm_BalloonInsert. Params: arrow point/symbol point/text/seq type(0-6)/leader |
 
-> These tools use the selected mechanical backend. The ZRX fallback covers the MCP call surface, not every public API exposed by `pyzwcadmech`.
+### Mechanical symbol annotation (ZwmToolKit LISP)
+
+These tools send `Zwm_*` AutoLISP through `lisp_bridge.py` (Get/Set round-trip via temporary XRECORD in named dictionary `ZWM_MCP`; Insert resolves new entity handles from ModelSpace). Call `cad_environment_init("GB")` before insert when possible. See [ZwmToolKit符号标注LISP接口说明.md](ZwmToolKit符号标注LISP接口说明.md) for LISP slot details.
+
+| Tool | Description | action |
+|------|-------------|--------|
+| `manage_surf_sym` | Surface roughness `ZwmSurfSym` | `insert` / `get` / `set` |
+| `manage_fc_frame` | Feature control frame `ZwmFCFrame` | `insert` / `get` / `set` |
+| `manage_datum_id` | Datum identifier `ZwmDatumId` | `insert` / `get` / `set` |
+| `manage_note` | Mechanical leader note `ZwmNote` | `insert` / `get` / `set` |
+| `manage_welding` | Welding symbol `ZwmWelding` | `insert` / `get` / `set` |
+| `manage_bubble` | Inspection bubble (not part balloon) | `auto` / `fill_all` / `fill_picked` / `manu` / `manu_list` / `get_substd` |
+
+> Mechanical module and symbol tools use the selected mechanical backend. The ZRX fallback covers the MCP call surface, not every public API exposed by `pyzwcadmech`.
 
 ### Extended Data
 
@@ -672,7 +704,9 @@ create_frame(
 
 ```
 zwcad-mechanical-mcp-server/
-├── server.py                 # MCP Server main program (37 tools)
+├── server.py                 # MCP Server main program (43 tools)
+├── lisp_bridge.py            # AutoLISP SendCommand and XRECORD round-trip
+├── mech_symbols.py           # Mechanical symbol LISP dispatch (manage_* tools)
 ├── mechanical_backend.py     # probe, route selection, and runtime fallback
 ├── mech_bridge.py            # ZRX HTTP/JSON compatibility client
 ├── requirements.txt          # Python dependencies
@@ -691,10 +725,12 @@ AI Client (Cursor/Claude/Qoder)
         │
         │ MCP Protocol (STDIO)
         ▼
-   FastMCP Server (server.py, 37 tools)
+   FastMCP Server (server.py, 43 tools)
         │
         ├── pyzwcad ──────► ZWCAD.Application COM API (basic drawing)
         │                   └── No type library dependency, always available
+        │
+        ├── lisp_bridge.py ─► Zwm_* LISP (symbol Get/Set via ZWM_MCP XRECORD)
         │
         └── mechanical_backend.py ──► mechanical backend selection
                 ├── pyzwcadmech ──► ZwmToolKit COM (default primary route)
