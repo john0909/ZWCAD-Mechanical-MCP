@@ -21,7 +21,7 @@ LOCATION_METHODS = {-1, 0, 45, 90, 135, 180, 225, 270, 315}
 SYMBOL_ACTIONS = {"insert", "get", "set"}
 BUBBLE_ACTIONS = {"auto", "manu", "manu_list", "get_substd", "fill_all", "fill_picked"}
 
-# DXF group 0 names; matches ZwmBubCreate_IsSupportEntity (see ZWMechanical_LISP接口说明.md)
+# DXF group 0 names; matches ZwmBubCreate_IsSupportEntity
 BUBBLE_TARGET_DXF_TYPES = (
     "DIMENSION,TOLERANCE,ZWMSURFSYM,ZWMFCFRAME,ZWMDATUMID,ZWMDATUMTARGET,"
     "ZWMNOTE,ZWMCHAMFER,ZWMWELDINGCHILDSYM,ZWMWELDING,ZWMHOLECHARTPOINT,"

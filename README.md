@@ -241,7 +241,7 @@ start.bat
 
 ### 机械符号标注（ZwmToolKit LISP）
 
-以下工具通过 `lisp_bridge.py` 向 ZWCAD 发送 `Zwm_*` AutoLISP（Get/Set 经命名字典 `ZWM_MCP` 临时 XRECORD 回传；Insert 以 ModelSpace 新增实体句柄为准）。插入前建议先 `cad_environment_init("GB")`。详细 LISP 槽位见 [ZwmToolKit符号标注LISP接口说明.md](ZwmToolKit符号标注LISP接口说明.md)。
+以下工具通过 `lisp_bridge.py` 向 ZWCAD 发送 `Zwm_*` AutoLISP（Get/Set 经命名字典 `ZWM_MCP` 临时 XRECORD 回传；Insert 以 ModelSpace 新增实体句柄为准）。插入前建议先 `cad_environment_init("GB")`。各工具 `params` 字段见 MCP 工具说明（`server.py` 中对应 docstring）。
 
 | 工具 | 说明 | action |
 |------|------|--------|
@@ -619,7 +619,7 @@ add tolerance to an existing dimension -> `modify_entity(entity_type="dimension"
 
 ### Mechanical symbol annotation (ZwmToolKit LISP)
 
-These tools send `Zwm_*` AutoLISP through `lisp_bridge.py` (Get/Set round-trip via temporary XRECORD in named dictionary `ZWM_MCP`; Insert resolves new entity handles from ModelSpace). Call `cad_environment_init("GB")` before insert when possible. See [ZwmToolKit符号标注LISP接口说明.md](ZwmToolKit符号标注LISP接口说明.md) for LISP slot details.
+These tools send `Zwm_*` AutoLISP through `lisp_bridge.py` (Get/Set round-trip via temporary XRECORD in named dictionary `ZWM_MCP`; Insert resolves new entity handles from ModelSpace). Call `cad_environment_init("GB")` before insert when possible. See each tool's `params` in the MCP tool descriptions (`server.py` docstrings).
 
 | Tool | Description | action |
 |------|-------------|--------|
