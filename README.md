@@ -44,7 +44,7 @@ https://github.com/user-attachments/assets/489ec032-c238-4d7f-8d69-bb894ef1b40b
 
 - **操作系统**: Windows 10/11
 - **CAD 软件**: [中望机械CAD 2026](https://www.zwsoft.com/product/zwcad/mfg) 已安装并运行
-- **Python**: 3.9+
+- **Python**: 3.10+（FastMCP 2.x 起要求 Python 3.10 及以上）
 
 ## 快速开始
 
@@ -171,14 +171,14 @@ start.bat
 
 | 工具 | 说明 | action / mode |
 |------|------|---------------|
-| `manage_view` | 布局/视图管理 | `list_layouts`, `get_active_layout`, `add_layout`, `set_active_layout`, `list_views`, `add_view` |
+| `manage_view` | 布局/视图/空间管理 | `list_layouts`, `get_active_layout`, `add_layout`, `set_active_layout`, `list_views`, `add_view`, `set_active_space`, `get_active_space` |
 | `zoom` | 视图缩放 | `extents`, `all`, `window`, `center`, `scale`, `previous` |
 
 ### 文档管理
 
 | 工具 | 说明 | action |
 |------|------|--------|
-| `manage_document` | 文档新建/保存/关闭/导入/导出/打印 | `new`, `save`, `close`, `info`, `list`, `activate`, `export`, `import`, `plot` |
+| `manage_document` | 文档新建/保存/关闭/导入/导出/打印/重生成/撤销标记 | `new`, `save`, `close`, `info`, `list`, `activate`, `export`, `import`, `plot`, `regen`, `start_undo`, `end_undo`, `wblock` |
 
 ### 表格、选择集与图块
 
@@ -258,9 +258,9 @@ start.bat
 
 | 工具 | 说明 | action |
 |------|------|--------|
-| `manage_dictionary` | 命名对象字典与XRecord管理 | `list`, `add`, `get_items`, `add_object`, `get_object`, `remove`, `rename` |
-| `manage_xdata` | 实体扩展数据(XData)读写 | `get`, `set`, `list_apps`, `add_app` |
-| `manage_utility` | CAD工具方法（坐标转换/距离/角度计算/关键字输入等） | `distance`, `angle`, `polar`, `translate_coords`, `get_real`, `get_keyword` |
+| `manage_dictionary` | 命名对象字典与XRecord管理 | `list`, `add`, `get_items`, `add_object`, `get_object`, `remove`, `rename`, `add_xrecord`, `get_xrecord`, `set_xrecord`, `get_entity_dict`, `has_entity_dict` |
+| `manage_xdata` | 实体扩展数据(XData)读写 | `list_apps`, `register_app`, `get_xdata`, `set_xdata`, `delete_xdata` |
+| `manage_utility` | CAD工具方法（坐标转换、极坐标点、角度/实数/距离互转、命令行提示、ObjectID 获取） | `translate_coordinates`, `polar_point`, `angle_to_real`, `angle_to_string`, `real_to_string`, `distance_to_real`, `prompt`, `get_object_id_string` |
 
 ## 机械后端自动回退
 
@@ -331,10 +331,13 @@ zwcad-mechanical-mcp-server/
 ├── mech_symbols.py           # 机械符号 LISP 编排（manage_* 符号工具）
 ├── mechanical_backend.py     # 机械探测、选路与运行期回退
 ├── mech_bridge.py            # ZRX HTTP/JSON 兼容层
+├── hatch_info.py             # Hatch 边界环顶点解析
 ├── requirements.txt          # Python 依赖
 ├── mcp-config.json           # MCP 客户端配置示例
 ├── start.bat                 # Windows 一键启动脚本
-├── install.cmd               # 安装脚本
+├── zrx/
+│   └── ZWMechMCP.zrx         # ZRX 回退插件（进程内机械接口）
+├── tests/                    # 后端选路与工具路由测试
 ├── .gitignore
 ├── LICENSE
 └── README.md
@@ -380,7 +383,7 @@ AI Client (Cursor/Claude/Qoder)
 - [pyzwcadmech](https://pypi.org/project/pyzwcadmech/) >=0.3.0 - 中望机械 Python COM 封装（含 BOM 读写修复）
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP 协议服务框架
 - [comtypes](https://github.com/enthought/comtypes) - COM 类型库加载与接口调用
-- [pywin32](https://github.com/mhammond/pywin32) - Windows COM 初始化支持
+- [pywin32](https://github.com/mhammond/pywin32) - Windows COM 初始化；`manage_xdata` 读取 XData 时绕开 comtypes 代理签名问题
 
 ## License
 
@@ -424,7 +427,7 @@ A ZWCAD Mechanical CAD automation MCP service that allows AI models to directly 
 
 - **OS**: Windows 10/11
 - **CAD Software**: [ZWCAD Mechanical 2026](https://www.zwsoft.com/product/zwcad/mfg) installed and running
-- **Python**: 3.9+
+- **Python**: 3.10+ (FastMCP 2.x requires Python 3.10 or newer)
 
 ## Quick Start
 
@@ -450,7 +453,7 @@ Or use the launcher:
 start.bat
 ```
 
-In the default `ZWMECH_BACKEND=auto` mode, MCP probes `pyzwcadmech` at startup. If the ZwmToolKit COM interfaces are unavailable, it calls `Application.LoadZrx()` on the active ZWCAD instance and uses the local ZRX bridge for mechanical operations; preloading the plugin is normally unnecessary.
+`ZWMECH_USE_ZRX` defaults to `0`, so mechanical tools prefer `pyzwcadmech`. If the ZwmToolKit COM interfaces are unavailable, the server calls `Application.LoadZrx()` on the active ZWCAD instance and falls back to the local ZRX bridge. Set `ZWMECH_USE_ZRX` to `1` (also accepts `true`/`on`/`yes`) to force every mechanical tool through ZRX.
 
 ### 4. Configure MCP Client
 
@@ -549,14 +552,14 @@ add tolerance to an existing dimension -> `modify_entity(entity_type="dimension"
 
 | Tool | Description | action / mode |
 |------|-------------|---------------|
-| `manage_view` | Layout and view management | `list_layouts`, `get_active_layout`, `add_layout`, `set_active_layout`, `list_views`, `add_view` |
+| `manage_view` | Layout, view and space management | `list_layouts`, `get_active_layout`, `add_layout`, `set_active_layout`, `list_views`, `add_view`, `set_active_space`, `get_active_space` |
 | `zoom` | View zoom control | `extents`, `all`, `window`, `center`, `scale`, `previous` |
 
 ### Document Management
 
 | Tool | Description | action |
 |------|-------------|--------|
-| `manage_document` | Document new/save/close/import/export | `new`, `save`, `close`, `info`, `list`, `activate`, `export`, `import`, `plot` |
+| `manage_document` | Document new/save/close/import/export/plot/regen/undo marks | `new`, `save`, `close`, `info`, `list`, `activate`, `export`, `import`, `plot`, `regen`, `start_undo`, `end_undo`, `wblock` |
 
 ### Table, Selection, Block
 
@@ -636,9 +639,9 @@ These tools send `Zwm_*` AutoLISP through `lisp_bridge.py` (Get/Set round-trip v
 
 | Tool | Description | action |
 |------|-------------|--------|
-| `manage_dictionary` | Named object dictionary & XRecord management | `list`, `add`, `get_items`, `add_object`, `get_object`, `remove`, `rename` |
-| `manage_xdata` | Entity extended data (XData) read/write | `get`, `set`, `list_apps`, `add_app` |
-| `manage_utility` | CAD utility methods (coordinate conversion/distance/angle/keyword input) | `distance`, `angle`, `polar`, `translate_coords`, `get_real`, `get_keyword` |
+| `manage_dictionary` | Named object dictionary & XRecord management | `list`, `add`, `get_items`, `add_object`, `get_object`, `remove`, `rename`, `add_xrecord`, `get_xrecord`, `set_xrecord`, `get_entity_dict`, `has_entity_dict` |
+| `manage_xdata` | Entity extended data (XData) read/write | `list_apps`, `register_app`, `get_xdata`, `set_xdata`, `delete_xdata` |
+| `manage_utility` | CAD utility methods (coordinate conversion, polar point, angle/real/distance conversion, command-line prompt, ObjectID query) | `translate_coordinates`, `polar_point`, `angle_to_real`, `angle_to_string`, `real_to_string`, `distance_to_real`, `prompt`, `get_object_id_string` |
 
 ## Automatic Mechanical Backend Fallback
 
@@ -709,10 +712,13 @@ zwcad-mechanical-mcp-server/
 ├── mech_symbols.py           # Mechanical symbol LISP dispatch (manage_* tools)
 ├── mechanical_backend.py     # probe, route selection, and runtime fallback
 ├── mech_bridge.py            # ZRX HTTP/JSON compatibility client
+├── hatch_info.py             # Hatch boundary loop vertex extraction
 ├── requirements.txt          # Python dependencies
 ├── mcp-config.json           # MCP client configuration example
 ├── start.bat                 # Windows one-click launcher
-├── install.cmd               # Installation script
+├── zrx/
+│   └── ZWMechMCP.zrx         # ZRX fallback plugin (in-process mechanical API)
+├── tests/                    # Backend routing and tool dispatch tests
 ├── .gitignore
 ├── LICENSE
 └── README.md
@@ -752,13 +758,21 @@ AI Client (Cursor/Claude/Qoder)
 
 4. **Connection Cache**: Connections are isolated per MCP worker to avoid cross-STA COM reuse. `mech_diagnose` resets the current worker cache for fresh diagnostics.
 
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The tests do not require a running ZWCAD instance. They cover mechanical backend selection, the `ZWMECH_USE_ZRX` switch, failover decisions, and tool dispatch.
+
 ## Dependencies
 
 - [pyzwcad](https://pypi.org/project/pyzwcad/) - ZWCAD Python COM wrapper
 - [pyzwcadmech](https://pypi.org/project/pyzwcadmech/) >=0.3.0 - ZWCAD MFG Python COM wrapper (includes BOM read/write fixes)
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP protocol server framework
 - [comtypes](https://github.com/enthought/comtypes) - COM type library loading and interface invocation
-- [pywin32](https://github.com/mhammond/pywin32) - Windows COM initialization support
+- [pywin32](https://github.com/mhammond/pywin32) - Windows COM initialization; also used by `manage_xdata` to read XData around a comtypes proxy signature mismatch
 
 ## License
 
