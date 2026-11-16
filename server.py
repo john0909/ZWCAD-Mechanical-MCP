@@ -1,4 +1,4 @@
-﻿"""
+"""
 ZWCAD Mechanical MCP Server - 基于 FastMCP 的中望机械CAD自动化服务
 提供画直线、画圆、画弧、画椭圆、多段线、样条曲线、标注、图块、图层、
 标题栏编辑、图框切换、明细表操作等功能
@@ -35,6 +35,7 @@ from mechanical_backend import (
     MechanicalBackendManager,
     MechanicalBackendUnavailable,
 )
+import process_binding as pb
 
 mcp = FastMCP(name="ZWCAD Mechanical Drawing Server")
 
@@ -151,16 +152,64 @@ def _get_default_frame_size(standard_name):
 
 _thread_state = threading.local()
 _mechanical_backend = MechanicalBackendManager()
+_target_manager = pb.TargetManager()
+_legacy_bind_warned = False
+
+
+def _init_env_target() -> None:
+    """Lock the ZWCAD target from ZWMECH_TARGET (JSON) at startup.
+
+    The instance does not have to be running yet: the target is stored
+    unresolved and bound lazily on first use.  Malformed JSON is fatal.
+    """
+    raw = os.environ.get("ZWMECH_TARGET")
+    if not raw:
+        return
+    try:
+        _target_manager.set_target(raw, source="env", resolve_now=False)
+    except pb.TargetError as exc:
+        raise SystemExit(f"ZWMECH_TARGET 无效: {exc}") from exc
+
+
+_init_env_target()
+
+
+def _make_cad_connection():
+    """Build the CAD connection object.
+
+    Pinned mode overrides ``.app`` so every access re-verifies and returns the
+    selected instance; legacy mode keeps the default ROT GetActiveObject path.
+    """
+    if _target_manager.mode != "pinned":
+        global _legacy_bind_warned
+        if not _legacy_bind_warned:
+            _legacy_bind_warned = True
+            logger.warning(
+                "未锁定 ZWCAD 目标实例，使用默认 ROT 行为；"
+                "可用 list_zwcad_processes + set_zwcad_target 或 ZWMECH_TARGET 锁定实例"
+            )
+        return ZwCAD()
+
+    class _PinnedZwCAD(ZwCAD):
+        app = property(lambda self: _target_manager.get())
+        Application = app
+
+    return _PinnedZwCAD(create_if_not_exists=False)
 
 
 def get_cad_connection():
     """Return apartment-local CAD and selected mechanical backend connections."""
-    generation = _mechanical_backend.generation
+    mech_generation = _mechanical_backend.generation
+    binding_generation = _target_manager.generation
     cached = getattr(_thread_state, "cad_conn", None)
-    if cached is not None and cached[0] == generation:
+    if (
+        cached is not None
+        and cached[0] == mech_generation
+        and cached[1] == binding_generation
+    ):
         try:
-            _ = cached[1].model.Count
-            return cached[1], cached[2]
+            _ = cached[2].model.Count
+            return cached[2], cached[3]
         except Exception:
             _thread_state.cad_conn = None
     try:
@@ -168,18 +217,24 @@ def get_cad_connection():
     except Exception:
         pass
 
+    pinned_app = _target_manager.get() if _target_manager.mode == "pinned" else None
     if _mechanical_backend.backend == "uninitialized":
-        _mechanical_backend.preflight()
-    zcad_conn = ZwCAD()
+        _mechanical_backend.preflight(app=pinned_app)
+    zcad_conn = _make_cad_connection()
+    cad_app = pinned_app if pinned_app is not None else zcad_conn.app
     try:
-        mech_conn = _mechanical_backend.create_connection(zcad_conn.app)
+        mech_conn = _mechanical_backend.create_connection(cad_app)
     except MechanicalBackendError as exc:
         logger.warning("机械后端连接创建失败: %s", exc)
-        _mechanical_backend.preflight()
-        mech_conn = _mechanical_backend.create_connection(zcad_conn.app)
+        _mechanical_backend.preflight(app=pinned_app)
+        mech_conn = _mechanical_backend.create_connection(cad_app)
 
-    generation = _mechanical_backend.generation
-    _thread_state.cad_conn = (generation, zcad_conn, mech_conn)
+    _thread_state.cad_conn = (
+        _mechanical_backend.generation,
+        _target_manager.generation,
+        zcad_conn,
+        mech_conn,
+    )
     return zcad_conn, mech_conn
 
 
@@ -2261,6 +2316,9 @@ def get_app_info(scope: str = "cad") -> dict:
                         info[prop.lower()] = getattr(app, prop)
                     except Exception:
                         pass
+            info["target_mode"] = _target_manager.mode
+            if _target_manager.mode == "pinned":
+                info["target"] = _target_manager.target
             return _ok(data=info)
         except Exception as e:
             return _err(f"获取应用信息({scope})", e)
@@ -2280,6 +2338,70 @@ def get_app_info(scope: str = "cad") -> dict:
         return _err("获取信息", ValueError(f"不支持的scope: {scope}"))
 
     return _run_mechanical(f"获取应用信息({scope})", operation, read_only=True)
+
+
+@mcp.tool
+def list_zwcad_processes() -> dict:
+    """列出当前运行的 ZWCAD 实例（pid/creation_time/executable_path/caption），供 set_zwcad_target 选择。只读操作。"""
+    processes = []
+    warnings = []
+    try:
+        for app in pb.running_applications():
+            try:
+                identity = pb.application_identity(app)
+            except pb.TargetError as exc:
+                warnings.append(str(exc))
+                continue
+            caption = None
+            try:
+                if hasattr(app, "Caption"):
+                    caption = str(app.Caption)
+            except Exception:
+                pass
+            processes.append({**identity, "caption": caption})
+    except pb.TargetError as exc:
+        return _err("列出 ZWCAD 实例", exc)
+    snapshot = _target_manager.snapshot()
+    return _ok(
+        processes=processes,
+        warnings=warnings,
+        target_mode=snapshot["mode"],
+        bound_target=snapshot["target"],
+        msg=f"找到 {len(processes)} 个 ZWCAD 实例",
+    )
+
+
+@mcp.tool
+def set_zwcad_target(
+    pid: int,
+    creation_time: str,
+    executable_path: str,
+    clear: bool = False,
+) -> dict:
+    """锁定 ZWCAD 目标实例（三元组来自 list_zwcad_processes）；clear=true 解除锁定并回到默认行为。"""
+    if clear:
+        _target_manager.clear()
+        reset_cad_connection()
+        return _ok(target_mode=_target_manager.mode, msg="已解除目标实例锁定，恢复默认行为")
+    try:
+        target = pb.parse_target(
+            {"pid": pid, "creation_time": creation_time, "executable_path": executable_path}
+        )
+        app = _target_manager.set_target(target, source="session", resolve_now=True)
+    except pb.TargetError as exc:
+        return _err("设置目标实例", exc)
+    reset_cad_connection()
+    caption = None
+    try:
+        if hasattr(app, "Caption"):
+            caption = str(app.Caption)
+    except Exception:
+        pass
+    return _ok(
+        target=_target_manager.target,
+        caption=caption,
+        msg=f"已锁定 ZWCAD 实例 PID {pid}",
+    )
 
 
 @mcp.tool

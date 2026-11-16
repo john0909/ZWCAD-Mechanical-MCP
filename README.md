@@ -1,4 +1,4 @@
-﻿# ZWCAD机械版 MCP Server
+# ZWCAD机械版 MCP Server
 
 [中文](#zwcad-mechanical-mcp-server) | [English](#english)
 
@@ -777,3 +777,17 @@ The tests do not require a running ZWCAD instance. They cover mechanical backend
 ## License
 
 MIT License - See [LICENSE](LICENSE)
+
+## 多实例管控（ZWCAD 目标实例锁定）
+
+支持绑定到多个 ZWCAD.exe 进程，MCP 可以把所有 CAD 工具调用锁定到用户选定的 ZWCAD.exe 实例：
+
+- `list_zwcad_processes`：枚举当前运行的 ZWCAD 实例（PID / 创建时间 / exe 路径 / 窗口标题）。
+- `set_zwcad_target(pid, creation_time, executable_path, clear=False)`：锁定目标实例；绑定后每次访问都会复核 PID + 进程创建时间 + exe 路径，实例退出或被替换会直接报错，绝不静默换绑。`clear=True` 解除锁定。
+- 环境变量 `ZWMECH_TARGET`（JSON，字段同上）：启动时锁定，实例可以暂未运行（懒绑定）；JSON 非法会拒绝启动。
+
+行为说明：
+
+- 未锁定时保持旧行为（COM `GetActiveObject` 默认实例），并输出一次警告。
+- `pyzwcadmech` 后端完整支持多实例；`pyzwcadmech` 探测会校验其附加实例与目标一致。
+- `ZRX` 桥固定使用 `127.0.0.1:17890`，本机同一时间只能有一个 ZWCAD 实例加载桥；桥的 `process_id` 与目标实例不一致时后端会明确拒绝，不会误连。

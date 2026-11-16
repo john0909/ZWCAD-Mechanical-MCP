@@ -46,7 +46,7 @@ def _window_process_id(app) -> int:
     return int(process_id.value)
 
 
-def _probe_pyzwcadmech_in_process() -> dict[str, Any]:
+def _probe_pyzwcadmech_in_process(expected_pid: int | None = None) -> dict[str, Any]:
     """Read-only probe entry point, executed in a bounded child process."""
     import comtypes.client
     import pythoncom
@@ -70,6 +70,10 @@ def _probe_pyzwcadmech_in_process() -> dict[str, Any]:
         cad_app = comtypes.client.GetActiveObject("ZWCAD.Application", dynamic=True)
         mech = ZwCADMech(cad_app=cad_app)
         result["cad_pid"] = _window_process_id(cad_app)
+        if expected_pid is not None and int(expected_pid) != result["cad_pid"]:
+            raise MechanicalBackendError(
+                f"probe attached to ZWCAD PID {result['cad_pid']}, expected PID {expected_pid}"
+            )
         result["steps"]["version"] = mech.zwm_app.get_version()
         mech.open_file("")
         result["steps"]["database"] = "ok"
@@ -99,10 +103,13 @@ def _probe_child_command() -> int:
     return 0
 
 
-def run_pyzwcadmech_probe(timeout=10.0) -> dict[str, Any]:
+def run_pyzwcadmech_probe(timeout=10.0, expected_pid: int | None = None) -> dict[str, Any]:
     """Run the COM probe out of process so an unresponsive COM server cannot hang MCP startup."""
     command = [sys.executable, "-m", "mechanical_backend", "--probe-pyzwcadmech"]
     try:
+        probe_env = dict(os.environ)
+        if expected_pid is not None:
+            probe_env["ZWMECH_PROBE_EXPECT_PID"] = str(expected_pid)
         completed = subprocess.run(
             command,
             cwd=str(Path(__file__).parent),
@@ -110,6 +117,7 @@ def run_pyzwcadmech_probe(timeout=10.0) -> dict[str, Any]:
             text=True,
             timeout=timeout,
             check=False,
+            env=probe_env,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"pyzwcadmech probe timed out after {timeout:g}s"}
@@ -128,6 +136,17 @@ def run_pyzwcadmech_probe(timeout=10.0) -> dict[str, Any]:
     if completed.returncode:
         payload["ok"] = False
         payload.setdefault("error", f"pyzwcadmech probe exited with {completed.returncode}")
+    if payload.get("ok") and expected_pid is not None:
+        probe_pid = payload.get("cad_pid")
+        if probe_pid is not None and int(probe_pid) != int(expected_pid):
+            payload = {
+                **payload,
+                "ok": False,
+                "error": (
+                    f"pyzwcadmech probe attached to ZWCAD PID {probe_pid}, "
+                    f"expected PID {expected_pid} (target instance mismatch)"
+                ),
+            }
     return payload
 
 
@@ -263,7 +282,7 @@ class MechanicalBackendManager:
 
         return ZwCAD().app
 
-    def preflight(self) -> dict[str, Any]:
+    def preflight(self, app=None) -> dict[str, Any]:
         with self._lock:
             if self._backend != "uninitialized":
                 return self.snapshot()
@@ -272,8 +291,36 @@ class MechanicalBackendManager:
                 self._select("unavailable", self._startup["error"])
                 return self.snapshot()
 
+            expected_pid = None
+            identity_error = None
+            if app is not None:
+                try:
+                    expected_pid = _window_process_id(app)
+                except Exception as exc:
+                    identity_error = f"无法读取目标 ZWCAD 实例身份: {exc}"
+
             if self.mode != "zrx":
-                self._startup = self._probe()
+                if identity_error:
+                    self._startup = {"ok": False, "error": identity_error}
+                else:
+                    if expected_pid is not None:
+                        self._startup = self._probe(expected_pid=expected_pid)
+                    else:
+                        self._startup = self._probe()
+                    if (
+                        self._startup.get("ok")
+                        and expected_pid is not None
+                        and self._startup.get("cad_pid") is not None
+                        and int(self._startup["cad_pid"]) != int(expected_pid)
+                    ):
+                        self._startup = {
+                            **self._startup,
+                            "ok": False,
+                            "error": (
+                                f"pyzwcadmech probe attached to ZWCAD PID "
+                                f"{self._startup['cad_pid']}, expected PID {expected_pid}"
+                            ),
+                        }
                 if self._startup.get("ok"):
                     self._select("pyzwcadmech")
                     return self.snapshot()
@@ -287,8 +334,8 @@ class MechanicalBackendManager:
                 reason = switch_source
 
             try:
-                app = self._active_app()
-                ready, error = self._activate_zrx(app)
+                target_app = app if app is not None else self._active_app()
+                ready, error = self._activate_zrx(target_app)
             except Exception as exc:
                 ready, error = False, f"Could not access active ZWCAD: {type(exc).__name__}: {exc}"
             if ready:

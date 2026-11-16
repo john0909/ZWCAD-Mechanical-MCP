@@ -121,5 +121,91 @@ class MechanicalBackendManagerTests(unittest.TestCase):
                 manager._bridge_for_app(object())
 
 
+class TargetAwarePreflightTests(unittest.TestCase):
+    def test_preflight_passes_expected_pid_to_probe(self):
+        seen = {}
+
+        def probe(expected_pid=None):
+            seen["expected"] = expected_pid
+            return {"ok": True, "cad_pid": expected_pid}
+
+        manager = MechanicalBackendManager(probe=probe)
+        pinned = object()
+        with patch.object(backend_module, "_window_process_id", return_value=42):
+            state = manager.preflight(app=pinned)
+
+        self.assertEqual("pyzwcadmech", state["active_backend"])
+        self.assertEqual(42, seen["expected"])
+        self.assertEqual(42, state["startup_probe"]["cad_pid"])
+
+    def test_preflight_probe_pid_mismatch_falls_back_to_zrx_with_pinned_app(self):
+        def probe(expected_pid=None):
+            return {"ok": True, "cad_pid": 999}
+
+        manager = MechanicalBackendManager(probe=probe)
+        pinned = object()
+        activated = []
+
+        def activate(app):
+            activated.append(app)
+            return (True, None)
+
+        with patch.object(backend_module, "_window_process_id", return_value=42), patch.object(
+            manager, "_activate_zrx", side_effect=activate
+        ):
+            state = manager.preflight(app=pinned)
+
+        self.assertEqual("zrx", state["active_backend"])
+        self.assertIn("expected PID 42", state["startup_probe"]["error"])
+        self.assertIs(pinned, activated[0])
+
+    def test_preflight_identity_failure_degrades_to_zrx(self):
+        manager = MechanicalBackendManager(
+            probe=Mock(side_effect=AssertionError("probe must be skipped"))
+        )
+
+        def activate(app):
+            return (True, None)
+
+        with patch.object(
+            backend_module, "_window_process_id", side_effect=RuntimeError("no hwnd")
+        ), patch.object(manager, "_activate_zrx", side_effect=activate):
+            state = manager.preflight(app=object())
+
+        self.assertEqual("zrx", state["active_backend"])
+        self.assertIn("无法读取目标 ZWCAD 实例身份", state["startup_probe"]["error"])
+
+    def test_probe_wrapper_rejects_pid_mismatch(self):
+        import json as json_module
+
+        from mechanical_backend import run_pyzwcadmech_probe
+
+        payload = {"ok": True, "cad_pid": 7, "steps": {}}
+        completed = Mock(returncode=0, stdout=json_module.dumps(payload), stderr="")
+        with patch.object(backend_module.subprocess, "run", return_value=completed):
+            result = run_pyzwcadmech_probe(expected_pid=42)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("expected PID 42", result["error"])
+
+    def test_probe_wrapper_passes_expected_pid_via_env(self):
+        import json as json_module
+
+        from mechanical_backend import run_pyzwcadmech_probe
+
+        captured = {}
+        payload = {"ok": True, "cad_pid": 42}
+
+        def fake_run(command, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return Mock(returncode=0, stdout=json_module.dumps(payload), stderr="")
+
+        with patch.object(backend_module.subprocess, "run", side_effect=fake_run):
+            result = run_pyzwcadmech_probe(expected_pid=42)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("42", captured["env"].get("ZWMECH_PROBE_EXPECT_PID"))
+
+
 if __name__ == "__main__":
     unittest.main()
